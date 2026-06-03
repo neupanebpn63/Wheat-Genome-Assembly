@@ -1,2 +1,2 @@
 # Wheat-Genome-Assembly
-Here’s an example repository outline for documenting the Linux commands used to perform whole genome assembly of the wheat cultivar on SCINet. This will serve as a structured, easy-to-follow guide for others or yourself in the future.
+This is the complete set of scripts and SLURM jobs used for whole genome assembly and annotation of hexaploid wheat (Triticum aestivum, 2n = 6x = 42). Steps are arranged serially from raw read processing through final assembly, repeat masking, gene annotation, and downstream analyses including synteny, collinearity, and genome visualization. For questions, clarifications, or updates, feel free to reach out.

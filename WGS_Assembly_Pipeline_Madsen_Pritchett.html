@@ -1,0 +1,2144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WGS_Assembly_Pipeline.md</title>
+  <style>
+  @import url("https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.9.0-alpha2/katex.min.css");
+
+  body {
+    font-family: Georgia, Cambria, serif;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #373D49;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-weight: 600;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+  }
+  h1 { font-size: 2em; }
+  h2 { font-size: 1.5em; }
+  h3 { font-size: 1.25em; }
+  a { color: #35D7BB; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: "Ubuntu Mono", Monaco, monospace;
+    background: #F5F7FA;
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+  }
+  pre {
+    background: #F5F7FA;
+    padding: 1em;
+    border-radius: 3px;
+    overflow-x: auto;
+  }
+  .hljs {
+    display: block;
+    overflow-x: auto;
+    padding: 0;
+    color: #333;
+  }
+  pre code { background: none; padding: 0; }
+  blockquote {
+    border-left: 3px solid #A0AABF;
+    padding-left: 1em;
+    margin-left: 0;
+    font-style: italic;
+    color: #666;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    border: 1px solid #E8E8E8;
+    padding: 0.5em;
+    text-align: left;
+  }
+  th {
+    background: #F5F7FA;
+    font-weight: 600;
+  }
+  #preview .table {
+    width: auto;
+  }
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+  .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+</style>
+</head>
+<body id="preview">
+<h1 class="code-line has-line-data" data-line-start="0" data-line-end="1"><a id="Whole_Genome_Assembly_Annotation_Pipeline_for_Wheat_0"></a>Whole Genome Assembly &amp; Annotation Pipeline for Wheat</h1>
+<p class="has-line-data" data-line-start="1" data-line-end="2">This document contains the complete set of scripts and SLURM jobs used for whole-genome assembly and annotation of two Pacific Northwest hexaploid wheat cultivars, <strong>Madsen</strong> (<em>Triticum aestivum</em> ssp. <em>aestivum</em>) and <strong>Pritchett</strong> (<em>Triticum aestivum</em> ssp. <em>compactum</em>) (2n = 6x = 42). Both cultivars were processed using the same computational workflow. Steps are arranged sequentially from raw read processing through final assembly, repeat masking, gene annotation, and downstream analyses, including synteny, collinearity, and genome visualization.</p>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="4" data-line-end="5"><a id="SBATCH_Header_Reference_4"></a>SBATCH Header Reference</h2>
+<pre><code class="has-line-data language-bash" data-line-start="6" data-line-end="20"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;                # specify the partition/queue</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;             # specify the account</span>
+<span class="hljs-comment">#SBATCH --nodes=1                            # allocate nodes</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=4                    # allocate CPU cores</span>
+<span class="hljs-comment">#SBATCH --qos=normal                         # specify QoS</span>
+<span class="hljs-comment">#SBATCH --time=1-00:00:00                    # set maximum run time</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;JOB TITLE&quot;               # Job name</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com   # Notification email</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL           # send email notification</span>
+<span class="hljs-comment">#SBATCH --output=job_output_%j.txt           # standard output file</span>
+<span class="hljs-comment">#SBATCH --error=job_error_%j.txt             # error messages file</span>
+<span class="hljs-comment">#SBATCH --export=ALL                         # export all user environment variables</span>
+</code></pre>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="23" data-line-end="24"><a id="Step_00_Merge_FASTQ_Files_23"></a>Step 00 — Merge FASTQ Files</h2>
+<p class="has-line-data" data-line-start="25" data-line-end="26">Concatenates all raw FASTQ chunks into a single merged file.</p>
+<pre><code class="has-line-data language-bash" data-line-start="28" data-line-end="31"><span class="hljs-built_in">mkdir</span> -p merged
+<span class="hljs-built_in">cat</span> sample*.fastq.gz &gt; merged/sample.fastq.gz
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="34" data-line-end="35"><a id="Step_01_GenomeScope_20_v20_34"></a>Step 01 — GenomeScope 2.0 (v2.0)</h2>
+<p class="has-line-data" data-line-start="36" data-line-end="37">Estimates genome size, heterozygosity, and ploidy from k-mer frequency histogram.</p>
+<pre><code class="has-line-data language-bash" data-line-start="39" data-line-end="75"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=Gscope2</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --ntasks=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=16</span>
+<span class="hljs-comment">#SBATCH --mem=64G</span>
+<span class="hljs-comment">#SBATCH --time=1-10:00:00</span>
+<span class="hljs-comment">#SBATCH --output=genomescope_%j.out</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+GS_SCRIPT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genomescope2.0/genomescope.R&quot;</span>
+
+<span class="hljs-comment"># List all FASTQ files</span>
+<span class="hljs-built_in">ls</span> *.fastq.gz &gt; fastq_files.txt
+
+<span class="hljs-comment"># Create temp directory for KMC</span>
+<span class="hljs-built_in">mkdir</span> -p kmc_tmp
+
+<span class="hljs-comment"># Count k-mers (k=21) with KMC</span>
+<span class="hljs-comment"># -ci1: min count; -cs10000: max counter value</span>
+kmc -k21 -t16 -m64 -ci1 -cs10000 @fastq_files.txt reads_db kmc_tmp/
+
+<span class="hljs-comment"># Convert KMC database to histogram</span>
+kmc_tools transform reads_db histogram reads.histo -cx10000
+
+<span class="hljs-comment"># Run GenomeScope 2.0 (-p 6 for hexaploid)</span>
+Rscript <span class="hljs-variable">$GS_SCRIPT</span> -i reads.histo -o genomescope_output -k 21 -p 6
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;GenomeScope analysis complete. Results are in genomescope_output/&quot;</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="77" data-line-end="78"><a id="Step_02_FastQC_v0121_77"></a>Step 02 — FastQC (v0.12.1)</h2>
+<p class="has-line-data" data-line-start="79" data-line-end="80">Generates quality control report for raw reads.</p>
+<pre><code class="has-line-data language-bash" data-line-start="82" data-line-end="101"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=4</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=1-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;fastqc_sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=fastqc_output.txt</span>
+
+module load fastqc
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+fastqc sample.fastq.gz -t 4 -o /project/&lt;account&gt;/WGS_Data/new_data/sample/01-fastqc
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="105" data-line-end="106"><a id="Step_03_FastpLong_v030_105"></a>Step 03 — FastpLong (v0.3.0)</h2>
+<p class="has-line-data" data-line-start="107" data-line-end="108">Quality filters and trims long reads; generates an HTML report.</p>
+<pre><code class="has-line-data language-bash" data-line-start="110" data-line-end="132"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=4</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=1-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;fastplong_sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=fastplong_output_%j.Log</span>
+<span class="hljs-comment">#SBATCH --error=fastplong_error_%j.Log</span>
+
+module purge
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+Report_HTML=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/011-fastplong/fastplong_sample_report.html&quot;</span>
+
+fastplong -i sample.fastq.gz -o sample_out.fq.gz -h <span class="hljs-variable">$Report_HTML</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="136" data-line-end="137"><a id="Step_04_Hifiasm_Assembly_v0250_136"></a>Step 04 — Hifiasm Assembly (v0.25.0)</h2>
+<p class="has-line-data" data-line-start="138" data-line-end="139">Assembles HiFi reads into contigs.</p>
+<pre><code class="has-line-data language-bash" data-line-start="141" data-line-end="172"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=48</span>
+<span class="hljs-comment">#SBATCH --mem=512000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;sample_hifiasm&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=hifiasm_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=hifiasm_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+module load gcc
+module load zlib
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+INPUT_DIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/01-genome&quot;</span>
+FASTQ_FILES=<span class="hljs-string">&quot;<span class="hljs-variable">${INPUT_DIR}</span>/sample1.fastq.gz <span class="hljs-variable">${INPUT_DIR}</span>/sample2.fastq.gz&quot;</span>
+OUTPUT_PREFIX=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/03-hifiasm&quot;</span>
+
+hifiasm -o <span class="hljs-variable">${OUTPUT_PREFIX}</span> -t 32 <span class="hljs-variable">${FASTQ_FILES}</span>
+
+<span class="hljs-comment"># Convert the primary contig graph (GFA) to FASTA for downstream steps</span>
+awk <span class="hljs-string">&#x27;/^S/{print &quot;&gt;&quot;$2&quot;\n&quot;$3}&#x27;</span> <span class="hljs-variable">${OUTPUT_PREFIX}</span>.bp.p_ctg.gfa &gt; <span class="hljs-variable">${OUTPUT_PREFIX}</span>_contig.fa
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="176" data-line-end="177"><a id="Step_05_BUSCO_on_Contigs_v600_176"></a>Step 05 — BUSCO on Contigs (v6.0.0)</h2>
+<p class="has-line-data" data-line-start="178" data-line-end="179">Assesses contig assembly completeness using BUSCO with the Poales lineage.</p>
+<pre><code class="has-line-data language-bash" data-line-start="181" data-line-end="204"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=16</span>
+<span class="hljs-comment">#SBATCH --mem=256000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=3-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;sample_busco&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=busco_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=busco_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+
+INPUT_FILE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/03-hifiasm/sample_contig.fa&quot;</span>
+LINEAGE_DATASET=<span class="hljs-string">&quot;poales_odb10&quot;</span>
+OUT_NAME=<span class="hljs-string">&quot;busco_sample_contig_analysis&quot;</span>
+
+busco -i <span class="hljs-variable">$INPUT_FILE</span> -m genome -l <span class="hljs-variable">$LINEAGE_DATASET</span> -c <span class="hljs-variable">$SLURM_CPUS_PER_TASK</span> -o <span class="hljs-variable">$OUT_NAME</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="208" data-line-end="209"><a id="Step_06_GFAstats_on_Contigs_v1311_208"></a>Step 06 — GFAstats on Contigs (v1.3.11)</h2>
+<p class="has-line-data" data-line-start="210" data-line-end="211">Computes assembly statistics (N50, total length, etc.) from the contig FASTA.</p>
+<pre><code class="has-line-data language-bash" data-line-start="213" data-line-end="240"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=2</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem-per-cpu=40000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;gfastats_sample_contig&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=gfastats_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=gfastats_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+
+EXECUTABLE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/gfastats/build/bin/gfastats&quot;</span>
+INPUT_FILE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/03-hifiasm/sample_contig.fa&quot;</span>
+OUTPUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/04-contig_quality/02-gfastat/gfastats_sample_contig_summary.txt&quot;</span>
+
+genome_size=<span class="hljs-string">&quot;16000000000&quot;</span>
+<span class="hljs-built_in">chmod</span> +x <span class="hljs-variable">$EXECUTABLE</span>
+<span class="hljs-built_in">set</span> -x
+
+<span class="hljs-variable">$EXECUTABLE</span> <span class="hljs-variable">$INPUT_FILE</span> <span class="hljs-variable">$genome_size</span> --discover-paths &gt; <span class="hljs-variable">$OUTPUT</span> 2&gt; debug.log
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="244" data-line-end="245"><a id="Step_07_QUAST_on_Contigs_v530_244"></a>Step 07 — QUAST on Contigs (v5.3.0)</h2>
+<p class="has-line-data" data-line-start="246" data-line-end="247">Evaluates contig assembly quality metrics (NGA50, mismatches, etc.).</p>
+<pre><code class="has-line-data language-bash" data-line-start="249" data-line-end="276"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=16</span>
+<span class="hljs-comment">#SBATCH --mem=256000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;quast_sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_quast%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_quast%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+ASSEMBLY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/04-contig_quality/03-quast/sample_contig.fa&quot;</span>
+OUTDIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/04-contig_quality/03-quast&quot;</span>
+
+quast -o <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span> --large --threads 16 <span class="hljs-string">&quot;<span class="hljs-variable">$ASSEMBLY</span>&quot;</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="280" data-line-end="281"><a id="Step_08_Scaffolding_with_RagTag_v210_280"></a>Step 08 — Scaffolding with RagTag (v2.1.0)</h2>
+<p class="has-line-data" data-line-start="282" data-line-end="283">Orders and orients contigs into scaffolds using a reference genome.</p>
+<pre><code class="has-line-data language-bash" data-line-start="285" data-line-end="315"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=768000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;sample_scaffold&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+REF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/reference/reference.fa&quot;</span>
+QUERY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/03-hifiasm/sample_contig.fa&quot;</span>
+OUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding&quot;</span>
+
+ragtag.py scaffold <span class="hljs-string">&quot;<span class="hljs-variable">$REF</span>&quot;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY</span>&quot;</span> -o <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>&quot;</span> -t 24 -u
+
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="319" data-line-end="320"><a id="Step_09_BUSCO_on_Scaffolds_v600_319"></a>Step 09 — BUSCO on Scaffolds (v6.0.0)</h2>
+<p class="has-line-data" data-line-start="321" data-line-end="322">Assesses scaffold assembly completeness using BUSCO.</p>
+<pre><code class="has-line-data language-bash" data-line-start="324" data-line-end="349"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=16</span>
+<span class="hljs-comment">#SBATCH --mem=768000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=3-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;sample_busco&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=busco_sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=busco_sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+
+INPUT_FILE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta&quot;</span>
+LINEAGE_DATASET=<span class="hljs-string">&quot;poales_odb10&quot;</span>
+OUT_NAME=<span class="hljs-string">&quot;busco_sample_scaffold_analysis&quot;</span>
+
+<span class="hljs-built_in">export</span> _JAVA_OPTIONS=<span class="hljs-string">&quot;-Xmx700g&quot;</span>
+
+busco -i <span class="hljs-variable">$INPUT_FILE</span> -m genome -l <span class="hljs-variable">$LINEAGE_DATASET</span> -c <span class="hljs-variable">$SLURM_CPUS_PER_TASK</span> -o <span class="hljs-variable">$OUT_NAME</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="353" data-line-end="354"><a id="Step_10_GFAstats_on_Scaffolds_v1311_353"></a>Step 10 — GFAstats on Scaffolds (v1.3.11)</h2>
+<p class="has-line-data" data-line-start="355" data-line-end="356">Computes assembly statistics from the scaffolded FASTA.</p>
+<pre><code class="has-line-data language-bash" data-line-start="358" data-line-end="385"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=2</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem-per-cpu=40000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;gfastats_scaff&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=gfastats_scaff_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=gfastats_scaff_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+
+EXECUTABLE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/gfastats/build/bin/gfastats&quot;</span>
+INPUT_FILE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta&quot;</span>
+OUTPUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/06-scaff_quality/02-gfastat/gfastats_scaff_summary.txt&quot;</span>
+
+genome_size=<span class="hljs-string">&quot;16000000000&quot;</span>
+<span class="hljs-built_in">chmod</span> +x <span class="hljs-variable">$EXECUTABLE</span>
+<span class="hljs-built_in">set</span> -x
+
+<span class="hljs-variable">$EXECUTABLE</span> <span class="hljs-variable">$INPUT_FILE</span> <span class="hljs-variable">$genome_size</span> --discover-paths &gt; <span class="hljs-variable">$OUTPUT</span> 2&gt; debug.log
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="389" data-line-end="390"><a id="Step_11_QUAST_on_Scaffolds_v530_389"></a>Step 11 — QUAST on Scaffolds (v5.3.0)</h2>
+<p class="has-line-data" data-line-start="391" data-line-end="392">Evaluates scaffold assembly quality metrics.</p>
+<pre><code class="has-line-data language-bash" data-line-start="394" data-line-end="421"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=16</span>
+<span class="hljs-comment">#SBATCH --mem=256000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;sample_quast&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_quast%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_quast%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+ASSEMBLY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta&quot;</span>
+OUTDIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/06-scaff_quality/03-quast&quot;</span>
+
+quast -o <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span> --large --threads 16 <span class="hljs-string">&quot;<span class="hljs-variable">$ASSEMBLY</span>&quot;</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="425" data-line-end="426"><a id="Step_12_RepeatMasker_v420_425"></a>Step 12 — RepeatMasker (v4.2.0)</h2>
+<p class="has-line-data" data-line-start="427" data-line-end="428">Masks repetitive elements in the scaffold using a custom TE library.</p>
+<h3 class="code-line has-line-data" data-line-start="429" data-line-end="430"><a id="Prepare_TE_Library_429"></a>Prepare TE Library</h3>
+<p class="has-line-data" data-line-start="431" data-line-end="432">Download and combine TREP and ClariTeRep databases:</p>
+<pre><code class="has-line-data language-bash" data-line-start="434" data-line-end="437">wget https://github.com/jdaron/CLARI-TE/raw/master/clariTeRep.fna
+wget http://botserv2.uzh.ch/kelldata/trep-db/downloads/trep-db_complete_Rel-16.fasta.gz
+</code></pre>
+<p class="has-line-data" data-line-start="438" data-line-end="439">Reformat headers to RepeatMasker <code>#Class/Family</code> format using the script below, then combine:</p>
+<pre><code class="has-line-data language-bash" data-line-start="441" data-line-end="443">python reformat_te_headers.py trep-db_complete_Rel-16.fasta clariTeRep.fna &gt; combined_te_lib_clean.fa
+</code></pre>
+<p class="has-line-data" data-line-start="444" data-line-end="445"><strong><code>reformat_te_headers.py</code></strong> — Normalizes TREP and ClariTeRep FASTA headers to <code>Name#Class/Family</code> format required by RepeatMasker:</p>
+<pre><code class="has-line-data language-python" data-line-start="447" data-line-end="511"><span class="hljs-comment">#!/usr/bin/env python3</span>
+<span class="hljs-string">&quot;&quot;&quot;
+Reformat TREP and ClariTeRep headers to RepeatMasker #Class/Family format.
+Usage:
+    python reformat_te_headers.py trep-db_complete_Rel-16.fasta clariTeRep.fna &gt; combined_te_lib_clean.fa
+&quot;&quot;&quot;</span>
+
+<span class="hljs-keyword">import</span> sys
+<span class="hljs-keyword">import</span> re
+
+PREFIX_MAP = {
+    <span class="hljs-string">&quot;RLC&quot;</span>: <span class="hljs-string">&quot;LTR/Copia&quot;</span>,    <span class="hljs-string">&quot;RLG&quot;</span>: <span class="hljs-string">&quot;LTR/Gypsy&quot;</span>,    <span class="hljs-string">&quot;RLB&quot;</span>: <span class="hljs-string">&quot;LTR/Bel-Pao&quot;</span>,
+    <span class="hljs-string">&quot;RLR&quot;</span>: <span class="hljs-string">&quot;LTR/Retrovirus&quot;</span>,<span class="hljs-string">&quot;RLX&quot;</span>: <span class="hljs-string">&quot;LTR/Unknown&quot;</span>,
+    <span class="hljs-string">&quot;RIL&quot;</span>: <span class="hljs-string">&quot;LINE/L1&quot;</span>,       <span class="hljs-string">&quot;RII&quot;</span>: <span class="hljs-string">&quot;LINE/I&quot;</span>,        <span class="hljs-string">&quot;RIX&quot;</span>: <span class="hljs-string">&quot;LINE/Unknown&quot;</span>,
+    <span class="hljs-string">&quot;RST&quot;</span>: <span class="hljs-string">&quot;SINE/tRNA&quot;</span>,     <span class="hljs-string">&quot;RSX&quot;</span>: <span class="hljs-string">&quot;SINE/Unknown&quot;</span>,  <span class="hljs-string">&quot;RXX&quot;</span>: <span class="hljs-string">&quot;Unknown&quot;</span>,
+    <span class="hljs-string">&quot;DTC&quot;</span>: <span class="hljs-string">&quot;DNA/CACTA&quot;</span>,     <span class="hljs-string">&quot;DTH&quot;</span>: <span class="hljs-string">&quot;DNA/Harbinger&quot;</span>, <span class="hljs-string">&quot;DTM&quot;</span>: <span class="hljs-string">&quot;DNA/MuDR&quot;</span>,
+    <span class="hljs-string">&quot;DTT&quot;</span>: <span class="hljs-string">&quot;DNA/Mariner&quot;</span>,   <span class="hljs-string">&quot;DTA&quot;</span>: <span class="hljs-string">&quot;DNA/hAT&quot;</span>,       <span class="hljs-string">&quot;DTX&quot;</span>: <span class="hljs-string">&quot;DNA/Unknown&quot;</span>,
+    <span class="hljs-string">&quot;DTP&quot;</span>: <span class="hljs-string">&quot;DNA/P&quot;</span>,         <span class="hljs-string">&quot;DTB&quot;</span>: <span class="hljs-string">&quot;DNA/PiggyBac&quot;</span>,
+    <span class="hljs-string">&quot;DHH&quot;</span>: <span class="hljs-string">&quot;RC/Helitron&quot;</span>,   <span class="hljs-string">&quot;DHX&quot;</span>: <span class="hljs-string">&quot;RC/Helitron&quot;</span>,
+    <span class="hljs-string">&quot;DMX&quot;</span>: <span class="hljs-string">&quot;DNA/Maverick&quot;</span>,  <span class="hljs-string">&quot;XXX&quot;</span>: <span class="hljs-string">&quot;Unknown&quot;</span>,
+}
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">get_class_family</span>(<span class="hljs-params">prefix</span>):
+    <span class="hljs-keyword">return</span> PREFIX_MAP.get(prefix.upper(), <span class="hljs-string">&quot;Unknown&quot;</span>)
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">reformat_trep</span>(<span class="hljs-params">header</span>):
+    name = header[<span class="hljs-number">1</span>:].split()[<span class="hljs-number">0</span>]
+    prefix = name[:<span class="hljs-number">3</span>]
+    cf = get_class_family(prefix)
+    <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;&gt;<span class="hljs-subst">{name}</span>#<span class="hljs-subst">{cf}</span>&quot;</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">reformat_clarite</span>(<span class="hljs-params">header</span>):
+    name = header[<span class="hljs-number">1</span>:].split()[<span class="hljs-number">0</span>]
+    sf_match = re.search(<span class="hljs-string">r&#x27;sF=([A-Z]{3})&#x27;</span>, header)
+    <span class="hljs-keyword">if</span> sf_match:
+        <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;&gt;<span class="hljs-subst">{name}</span>#<span class="hljs-subst">{get_class_family(sf_match.group(<span class="hljs-number">1</span>))}</span>&quot;</span>
+    cl_match = re.search(<span class="hljs-string">r&#x27;classif=([A-Z]{3})&#x27;</span>, header)
+    <span class="hljs-keyword">if</span> cl_match:
+        <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;&gt;<span class="hljs-subst">{name}</span>#<span class="hljs-subst">{get_class_family(cl_match.group(<span class="hljs-number">1</span>))}</span>&quot;</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;&gt;<span class="hljs-subst">{name}</span>#Unknown&quot;</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">process_file</span>(<span class="hljs-params">filepath, mode</span>):
+    opener = <span class="hljs-built_in">open</span>
+    <span class="hljs-keyword">if</span> filepath.endswith(<span class="hljs-string">&quot;.gz&quot;</span>):
+        <span class="hljs-keyword">import</span> gzip
+        opener = gzip.<span class="hljs-built_in">open</span>
+    <span class="hljs-keyword">with</span> opener(filepath, <span class="hljs-string">&quot;rt&quot;</span>) <span class="hljs-keyword">as</span> fh:
+        <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> fh:
+            line = line.rstrip()
+            <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;&gt;&quot;</span>):
+                <span class="hljs-built_in">print</span>(reformat_trep(line) <span class="hljs-keyword">if</span> mode == <span class="hljs-string">&quot;trep&quot;</span> <span class="hljs-keyword">else</span> reformat_clarite(line))
+            <span class="hljs-keyword">else</span>:
+                <span class="hljs-built_in">print</span>(line)
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">main</span>():
+    <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(sys.argv) &lt; <span class="hljs-number">3</span>:
+        <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;Usage: python reformat_te_headers.py trep.fasta clariTeRep.fna &gt; combined_te_lib_clean.fa&quot;</span>)
+        sys.exit(<span class="hljs-number">1</span>)
+    process_file(sys.argv[<span class="hljs-number">1</span>], <span class="hljs-string">&quot;trep&quot;</span>)
+    process_file(sys.argv[<span class="hljs-number">2</span>], <span class="hljs-string">&quot;clarite&quot;</span>)
+
+<span class="hljs-keyword">if</span> __name__ == <span class="hljs-string">&quot;__main__&quot;</span>:
+    main()
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="512" data-line-end="513"><a id="Run_RepeatMasker_512"></a>Run RepeatMasker</h3>
+<pre><code class="has-line-data language-bash" data-line-start="515" data-line-end="547"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=repeat_masker</span>
+<span class="hljs-comment">#SBATCH --output=repeat_masker_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=repeat_masker_%j.err</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --ntasks-per-node=16</span>
+<span class="hljs-comment">#SBATCH --mem=150G</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+module load gcc perl
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+GENOME=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta&quot;</span>
+OUTPUT_DIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/07-repeatmasker&quot;</span>
+TE_LIB=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/07-repeatmasker/combined_te_lib_clean.fasta&quot;</span>
+
+RepeatMasker \
+  -lib <span class="hljs-variable">${TE_LIB}</span> \
+  -<span class="hljs-built_in">dir</span> <span class="hljs-variable">${OUTPUT_DIR}</span> \
+  -gff \
+  -xsmall \
+  -e ncbi \
+  -pa <span class="hljs-variable">$SLURM_NTASKS_PER_NODE</span> \
+  <span class="hljs-variable">${GENOME}</span>
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="547" data-line-end="548"><a id="Summarize_RepeatMasker_Output_Python_script_547"></a>Summarize RepeatMasker Output (Python script)</h3>
+<p class="has-line-data" data-line-start="549" data-line-end="550">Parses RepeatMasker <code>.out</code> file and summarizes TE content by superfamily with genome coverage percentages.</p>
+<pre><code class="has-line-data language-python" data-line-start="552" data-line-end="612"><span class="hljs-comment">#!/usr/bin/env python3</span>
+<span class="hljs-string">&quot;&quot;&quot;
+Usage: python summarize_repeats.py ragtag.scaffold.fasta.out
+&quot;&quot;&quot;</span>
+
+<span class="hljs-keyword">import</span> sys, collections
+
+GENOME_SIZE = <span class="hljs-number">14800150786</span>  <span class="hljs-comment"># update to match your .tbl total length</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">classify</span>(<span class="hljs-params">family</span>):
+    f = family.strip()
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;LTR/Gypsy&quot;</span>):       <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Gypsy (RLG)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;LTR/Copia&quot;</span>):       <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Copia (RLC)&quot;</span>
+    <span class="hljs-keyword">if</span> f <span class="hljs-keyword">in</span> (<span class="hljs-string">&quot;LTR/mixture&quot;</span>,<span class="hljs-string">&quot;LTR&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;LTR/mixture&quot;</span>) <span class="hljs-keyword">or</span> f <span class="hljs-keyword">in</span> (<span class="hljs-string">&quot;LTR/Unknown&quot;</span>,<span class="hljs-string">&quot;LTR/unknown&quot;</span>,<span class="hljs-string">&quot;pararetrovirus&quot;</span>,<span class="hljs-string">&quot;mixture&quot;</span>): <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Unclassified LTR (RLX)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;LINE&quot;</span>):            <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;LINE (RIX)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;SINE&quot;</span>):            <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;SINE (SIX)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;TIR/EnSpm_CACTA&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;DNA/CACTA&quot;</span>):     <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;CACTA (DTC)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;TIR/MuDR_Mutator&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;DNA/MuDR&quot;</span>):     <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Mutator (DTM)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;TIR/PIF_Harbinger&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;DNA/Harbinger&quot;</span>) <span class="hljs-keyword">or</span> f == <span class="hljs-string">&quot;DNA/PIF-Harbinger&quot;</span>: <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Harbinger (DTH)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;TIR/Tc1_Mariner&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;DNA/Mariner&quot;</span>):   <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Mariner (DTT)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;TIR/hAT&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;DNA/hAT&quot;</span>):               <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;hAT (DTA)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;DNA/Unknown&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;DNA/unknown&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;TIR&quot;</span>): <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Unclassified TIR (DTX)&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;Helitron&quot;</span>) <span class="hljs-keyword">or</span> f.startswith(<span class="hljs-string">&quot;RC/Helitron&quot;</span>):           <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Helitron (DHH)&quot;</span>
+    <span class="hljs-keyword">if</span> f == <span class="hljs-string">&quot;Simple_repeat&quot;</span>:            <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;_Simple_repeat&quot;</span>
+    <span class="hljs-keyword">if</span> f == <span class="hljs-string">&quot;Low_complexity&quot;</span>:           <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;_Low_complexity&quot;</span>
+    <span class="hljs-keyword">if</span> f.startswith(<span class="hljs-string">&quot;Satellite&quot;</span>):       <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;_Satellite&quot;</span>
+    <span class="hljs-keyword">if</span> f <span class="hljs-keyword">in</span> (<span class="hljs-string">&quot;Small_RNA&quot;</span>,) <span class="hljs-keyword">or</span> f.startswith((<span class="hljs-string">&quot;rRNA&quot;</span>,<span class="hljs-string">&quot;tRNA&quot;</span>,<span class="hljs-string">&quot;snRNA&quot;</span>)): <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;_Small_RNA&quot;</span>
+    <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;Unclassified TE (XXX)&quot;</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">main</span>(<span class="hljs-params">out_file</span>):
+    bp_counts = collections.defaultdict(<span class="hljs-built_in">int</span>)
+    elem_counts = collections.defaultdict(<span class="hljs-built_in">int</span>)
+    <span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(out_file) <span class="hljs-keyword">as</span> fh:
+        <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> fh:
+            line = line.rstrip()
+            <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> line <span class="hljs-keyword">or</span> line.startswith((<span class="hljs-string">&quot;SW&quot;</span>,<span class="hljs-string">&quot;score&quot;</span>)): <span class="hljs-keyword">continue</span>
+            <span class="hljs-keyword">if</span> line.lstrip().startswith(<span class="hljs-string">&quot;*&quot;</span>): line = line.lstrip()[<span class="hljs-number">1</span>:].lstrip()
+            parts = line.split()
+            <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(parts) &lt; <span class="hljs-number">11</span>: <span class="hljs-keyword">continue</span>
+            <span class="hljs-keyword">try</span>:
+                begin, end = <span class="hljs-built_in">int</span>(parts[<span class="hljs-number">5</span>]), <span class="hljs-built_in">int</span>(parts[<span class="hljs-number">6</span>])
+            <span class="hljs-keyword">except</span> ValueError:
+                <span class="hljs-keyword">continue</span>
+            cat = classify(parts[<span class="hljs-number">10</span>])
+            bp_counts[cat] += end - begin + <span class="hljs-number">1</span>
+            elem_counts[cat] += <span class="hljs-number">1</span>
+
+    G = GENOME_SIZE
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">pct</span>(<span class="hljs-params">bp</span>): <span class="hljs-keyword">return</span> <span class="hljs-number">100.0</span> * bp / G
+
+    <span class="hljs-comment"># Print summary table (see original for full formatted output)</span>
+    <span class="hljs-keyword">for</span> cat, bp <span class="hljs-keyword">in</span> <span class="hljs-built_in">sorted</span>(bp_counts.items()):
+        <span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;<span class="hljs-subst">{cat:&lt;<span class="hljs-number">40</span>}</span> <span class="hljs-subst">{bp:&gt;<span class="hljs-number">14</span>,}</span>  <span class="hljs-subst">{pct(bp):&gt;<span class="hljs-number">6.2</span>f}</span>%&quot;</span>)
+
+<span class="hljs-keyword">if</span> __name__ == <span class="hljs-string">&quot;__main__&quot;</span>:
+    <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(sys.argv) != <span class="hljs-number">2</span>:
+        <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;Usage: python summarize_repeats.py ragtag.scaffold.fasta.out&quot;</span>)
+        sys.exit(<span class="hljs-number">1</span>)
+    main(sys.argv[<span class="hljs-number">1</span>])
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="615" data-line-end="616"><a id="Step_13_GMAP_CDS_Alignment_v20241120_615"></a>Step 13 — GMAP CDS Alignment (v2024.11.20)</h2>
+<p class="has-line-data" data-line-start="617" data-line-end="618">Aligns reference CDS sequences to the repeat-masked assembly to generate hints for AUGUSTUS.</p>
+<pre><code class="has-line-data language-bash" data-line-start="620" data-line-end="665"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=500G</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;gmap-sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=gmap-sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=gmap-sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -euo pipefail
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+GENOME=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/07-repeatmasker/ragtag.scaffold.fasta.masked&quot;</span>
+CDS=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/reference_cds.fasta&quot;</span>
+OUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/09-gmap&quot;</span>
+DB_NAME=<span class="hljs-string">&quot;sample_masked&quot;</span>
+
+[[ ! -f <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span> || ! -f <span class="hljs-string">&quot;<span class="hljs-variable">$CDS</span>&quot;</span> ]] &amp;&amp; { <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Error: Missing input files!&quot;</span>; <span class="hljs-built_in">exit</span> 1; }
+<span class="hljs-built_in">mkdir</span> -p <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>&quot;</span>
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Building GMAP index...&quot;</span>
+gmap_build -D <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>&quot;</span> -d <span class="hljs-string">&quot;<span class="hljs-variable">$DB_NAME</span>&quot;</span> -k 14 <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span>
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Running GMAP...&quot;</span>
+gmapl -D <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>&quot;</span> -d <span class="hljs-string">&quot;<span class="hljs-variable">$DB_NAME</span>&quot;</span> \
+  -f gff3_gene \
+  -n 1 \
+  -t 24 \
+  -B 5 \
+  --min-intronlength=20 \
+  --max-intronlength=500000 \
+  <span class="hljs-string">&quot;<span class="hljs-variable">$CDS</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sample_gmap.gff3&quot;</span>
+
+conda deactivate
+</code></pre>
+<p class="has-line-data" data-line-start="666" data-line-end="667">Convert GMAP GFF to AUGUSTUS hints format:</p>
+<pre><code class="has-line-data language-bash" data-line-start="669" data-line-end="678">awk <span class="hljs-string">&#x27;BEGIN {OFS=&quot;\t&quot;} {
+  if ($3 == &quot;exon&quot; || $3 == &quot;CDS&quot;) {
+    hint_type = ($3 == &quot;CDS&quot;) ? &quot;CDSpart&quot; : &quot;exonpart&quot;
+    match($9, /Parent=([^;]+)/, arr)
+    grp = (arr[1] != &quot;&quot;) ? arr[1] : &quot;g&quot;NR
+    print $1, &quot;E&quot;, hint_type, $4, $5, &quot;.&quot;, $7, &quot;.&quot;, &quot;src=E;grp=&quot; grp
+  }
+}&#x27;</span> sample_gmap.gff3 &gt; sample_gmap.hints.gff3
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="681" data-line-end="682"><a id="Step_14_Liftoff_Gene_Transfer_v163_681"></a>Step 14 — Liftoff Gene Transfer (v1.6.3)</h2>
+<p class="has-line-data" data-line-start="683" data-line-end="684">Transfers gene annotations from IWGSC reference to the new assembly.</p>
+<pre><code class="has-line-data language-bash" data-line-start="686" data-line-end="718"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=500G</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;liftoff-sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=liftoff-sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=liftoff-sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -euo pipefail
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+TARGET_GENOME=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta&quot;</span>
+REF_GENOME=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/iwgsc_refseqv2.1_assembly.fa&quot;</span>
+REF_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/iwgsc2.1.HC.gff3&quot;</span>
+OUT_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/08-liftoff/sample_liftoff.gff3&quot;</span>
+UNMAPPED_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/08-liftoff/sample_liftoff_unmapped.gff3&quot;</span>
+
+liftoff <span class="hljs-string">&quot;<span class="hljs-variable">$TARGET_GENOME</span>&quot;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$REF_GENOME</span>&quot;</span> -g <span class="hljs-string">&quot;<span class="hljs-variable">$REF_GFF</span>&quot;</span> -o <span class="hljs-string">&quot;<span class="hljs-variable">$OUT_GFF</span>&quot;</span> -u <span class="hljs-string">&quot;<span class="hljs-variable">$UNMAPPED_GFF</span>&quot;</span> -p 24
+
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="721" data-line-end="722"><a id="Step_15_AUGUSTUS_Split_Genome_721"></a>Step 15 — AUGUSTUS: Split Genome</h2>
+<p class="has-line-data" data-line-start="723" data-line-end="724">Splits masked genome into per-chromosome FASTA files for parallel AUGUSTUS runs.</p>
+<pre><code class="has-line-data language-bash" data-line-start="726" data-line-end="760"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=split_genome</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=1</span>
+<span class="hljs-comment">#SBATCH --mem=20G</span>
+<span class="hljs-comment">#SBATCH --time=01:00:00</span>
+<span class="hljs-comment">#SBATCH --output=split_genome.out</span>
+<span class="hljs-comment">#SBATCH --error=split_genome.err</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+
+<span class="hljs-built_in">set</span> -euo pipefail
+<span class="hljs-built_in">set</span> -x
+
+GENOME=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/07-repeatmasker/ragtag.scaffold.fasta.masked&quot;</span>
+CHR_LIST=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/10-augustus/chr_headers.txt&quot;</span>
+OUTDIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/10-augustus/split&quot;</span>
+
+<span class="hljs-built_in">cd</span> <span class="hljs-string">&quot;<span class="hljs-subst">$(dirname <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span>)</span>&quot;</span>
+samtools faidx <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span>
+
+<span class="hljs-built_in">mkdir</span> -p <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span>
+
+<span class="hljs-comment"># Extract named chromosomes</span>
+<span class="hljs-keyword">while</span> <span class="hljs-built_in">read</span> -r chr; <span class="hljs-keyword">do</span>
+    samtools faidx <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$chr</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/<span class="hljs-variable">${chr//|/_}</span>.fasta&quot;</span>
+<span class="hljs-keyword">done</span> &lt; <span class="hljs-string">&quot;<span class="hljs-variable">$CHR_LIST</span>&quot;</span>
+
+<span class="hljs-comment"># Extract unplaced contigs</span>
+<span class="hljs-built_in">cut</span> -f1 <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>.fai&quot;</span> | grep -v -Ff <span class="hljs-string">&quot;<span class="hljs-variable">$CHR_LIST</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/unplaced.list&quot;</span>
+xargs -a <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/unplaced.list&quot;</span> samtools faidx <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/unplaced.fasta&quot;</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="763" data-line-end="764"><a id="Step_16_AUGUSTUS_Run_Gene_Prediction_v350_763"></a>Step 16 — AUGUSTUS: Run Gene Prediction (v3.5.0)</h2>
+<p class="has-line-data" data-line-start="765" data-line-end="766">Runs AUGUSTUS in array mode (one job per chromosome split) using GMAP hints.</p>
+<pre><code class="has-line-data language-bash" data-line-start="768" data-line-end="810"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=augustus_array</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=8</span>
+<span class="hljs-comment">#SBATCH --mem=128G</span>
+<span class="hljs-comment">#SBATCH --time=7-00:00:00</span>
+<span class="hljs-comment">#SBATCH --array=1-22</span>
+<span class="hljs-comment">#SBATCH --output=augustus_%A_%a.out</span>
+<span class="hljs-comment">#SBATCH --error=augustus_%A_%a.err</span>
+<span class="hljs-comment">#SBATCH --mail-type=ALL</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+
+<span class="hljs-built_in">set</span> -euo pipefail
+<span class="hljs-built_in">set</span> -x
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+SPLIT_DIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/10-augustus/split&quot;</span>
+HINTS=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/09-gmap/sample_gmap.hints.gff3&quot;</span>
+OUTDIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/10-augustus/augustus_output&quot;</span>
+
+<span class="hljs-built_in">export</span> AUGUSTUS_CONFIG_PATH=/home/&lt;username&gt;/.conda/envs/&lt;env_name&gt;/config
+
+<span class="hljs-built_in">mkdir</span> -p <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span>
+
+FASTAS=($(<span class="hljs-built_in">ls</span> <span class="hljs-string">&quot;<span class="hljs-variable">$SPLIT_DIR</span>&quot;</span>/*.fasta | <span class="hljs-built_in">sort</span>))
+CHR_FASTA=<span class="hljs-string">&quot;<span class="hljs-variable">${FASTAS[$SLURM_ARRAY_TASK_ID-1]}</span>&quot;</span>
+CHR_NAME=$(<span class="hljs-built_in">basename</span> <span class="hljs-string">&quot;<span class="hljs-variable">$CHR_FASTA</span>&quot;</span> .fasta)
+
+augustus \
+  --species=wheat \
+  --hintsfile=<span class="hljs-string">&quot;<span class="hljs-variable">$HINTS</span>&quot;</span> \
+  --extrinsicCfgFile=<span class="hljs-string">&quot;<span class="hljs-variable">$AUGUSTUS_CONFIG_PATH</span>/extrinsic/extrinsic.MPE.cfg&quot;</span> \
+  --UTR=off --gff3=on --uniqueGeneId=<span class="hljs-literal">true</span> \
+  --softmasking=1 \
+  <span class="hljs-string">&quot;<span class="hljs-variable">$CHR_FASTA</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/<span class="hljs-variable">$CHR_NAME</span>.gff3&quot;</span>
+
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="812" data-line-end="813"><a id="Step_17_Final_Gene_Annotation_Merge_v170_AGAT_812"></a>Step 17 — Final Gene Annotation Merge (v1.7.0 — AGAT)</h2>
+<p class="has-line-data" data-line-start="814" data-line-end="815">Filters AUGUSTUS predictions, removes TEs and redundant models, merges with Liftoff annotations, and outputs a final GFF3.</p>
+<pre><code class="has-line-data language-bash" data-line-start="817" data-line-end="926"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;sample_gene_annotation&quot;</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=48</span>
+<span class="hljs-comment">#SBATCH --mem=256G</span>
+<span class="hljs-comment">#SBATCH --time=7-00:00:00</span>
+<span class="hljs-comment">#SBATCH --output=sample_geneannot_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_geneannot_%j.err</span>
+<span class="hljs-comment">#SBATCH --mail-type=ALL</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+
+LIFTOFF_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/08-liftoff/sample_liftoff.gff3&quot;</span>
+GENOME=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/07-repeatmasker/ragtag.scaffold.fasta.masked&quot;</span>
+AUGUSTUS_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/10-augustus/sample_augustus.gff3&quot;</span>
+SPROT_FA=<span class="hljs-string">&quot;uniprot_sprot.fasta&quot;</span>
+TE_FA=<span class="hljs-string">&quot;Viridiplantae_v4.0.fasta&quot;</span>
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+<span class="hljs-comment"># 0. Extract raw Augustus proteins</span>
+gffread <span class="hljs-string">&quot;<span class="hljs-variable">$AUGUSTUS_GFF</span>&quot;</span> -g <span class="hljs-string">&quot;<span class="hljs-variable">$GENOME</span>&quot;</span> -y sample_aug.raw.prot.faa -S
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Raw proteins: <span class="hljs-subst">$(grep -c &#x27;&gt;&#x27; sample_aug.raw.prot.faa)</span>&quot;</span>
+
+<span class="hljs-comment"># 1. Length filter (500–15000 aa)</span>
+seqkit <span class="hljs-built_in">seq</span> --min-len 500 sample_aug.raw.prot.faa | seqkit <span class="hljs-built_in">seq</span> --max-len 15000 &gt; aug.step1.faa
+<span class="hljs-built_in">cp</span> aug.step1.faa aug.complete.faa
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;After length filter: <span class="hljs-subst">$(grep -c &#x27;&gt;&#x27; aug.complete.faa)</span>&quot;</span>
+
+<span class="hljs-comment"># 2. Swiss-Prot filter (keep proteins with significant homology)</span>
+diamond makedb --<span class="hljs-keyword">in</span> <span class="hljs-string">&quot;<span class="hljs-variable">$SPROT_FA</span>&quot;</span> --db uniprot_sprot.dmnd || <span class="hljs-literal">true</span>
+diamond blastp \
+    --query aug.complete.faa --db uniprot_sprot.dmnd \
+    --out aug.vs_sprot.tsv \
+    --outfmt 6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore qlen slen \
+    --max-target-seqs 1 --evalue 1e-15 --query-cover 60 --subject-cover 60 \
+    --ultra-sensitive --threads 40
+awk <span class="hljs-string">&#x27;$11 &lt; 1e-25 &amp;&amp; $12 / ($13 * 3) &gt; 0.38 {print $1}&#x27;</span> aug.vs_sprot.tsv | <span class="hljs-built_in">sort</span> -u &gt; keep_sprot.txt
+seqkit grep -n -f keep_sprot.txt aug.complete.faa &gt; sample_augustus_clean.prot.faa
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;After Swiss-Prot filter: <span class="hljs-subst">$(grep -c &#x27;&gt;&#x27; sample_augustus_clean.prot.faa)</span>&quot;</span>
+
+<span class="hljs-comment"># 3. TE filter (remove transposon-like proteins)</span>
+diamond makedb --<span class="hljs-keyword">in</span> <span class="hljs-string">&quot;<span class="hljs-variable">$TE_FA</span>&quot;</span> --db rex_te.dmnd || <span class="hljs-literal">true</span>
+diamond blastp \
+    --query sample_augustus_clean.prot.faa --db rex_te.dmnd \
+    --out aug.vs_rex.tsv \
+    --outfmt 6 qseqid sseqid pident length evalue bitscore \
+    --max-target-seqs 1 --evalue 1e-25 --query-cover 40 --<span class="hljs-built_in">id</span> 30 --threads 40
+<span class="hljs-built_in">cut</span> -f1 aug.vs_rex.tsv | <span class="hljs-built_in">sort</span> -u &gt; te_hits.txt
+seqkit grep -v -n -f te_hits.txt sample_augustus_clean.prot.faa &gt; sample_augustus_clean_noTE.prot.faa
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;After TE filter: <span class="hljs-subst">$(grep -c &#x27;&gt;&#x27; sample_augustus_clean_noTE.prot.faa)</span>&quot;</span>
+
+<span class="hljs-comment"># 4. Keep longest isoform and extract clean gene IDs</span>
+agat_sp_keep_longest_isoform.pl --gff <span class="hljs-string">&quot;<span class="hljs-variable">$AUGUSTUS_GFF</span>&quot;</span> -o sample_augustus_clean.longest.gff3
+grep <span class="hljs-string">&quot;&gt;&quot;</span> sample_augustus_clean_noTE.prot.faa \
+    | sed <span class="hljs-string">&#x27;s/&gt;//&#x27;</span> | sed <span class="hljs-string">&#x27;s/ .*//&#x27;</span> \
+    | sed <span class="hljs-string">&#x27;s/\.t[0-9]*$//&#x27;</span> | sed <span class="hljs-string">&#x27;s/\.mRNA.*$//&#x27;</span> \
+    | <span class="hljs-built_in">sort</span> -u &gt; gene_ids.txt
+agat_sp_filter_feature_from_keep_list.pl \
+    --gff sample_augustus_clean.longest.gff3 \
+    --keep_list gene_ids.txt --attribute ID \
+    --output sample_augustus_clean.gff3
+
+<span class="hljs-comment"># 5. Overlap removal vs Liftoff </span>
+awk -F<span class="hljs-string">&#x27;\t&#x27;</span> <span class="hljs-string">&#x27;$3==&quot;gene&quot; {if(match($9,/ID=([^;]+)/,a)) print $1&quot;\t&quot;($4-1)&quot;\t&quot;$5&quot;\t&quot;a[1]&quot;\t0\t&quot;$7}&#x27;</span> \
+    <span class="hljs-string">&quot;<span class="hljs-variable">$LIFTOFF_GFF</span>&quot;</span> | <span class="hljs-built_in">sort</span> -k1,1 -k2,2n &gt; liftoff_genes.bed
+awk -F<span class="hljs-string">&#x27;\t&#x27;</span> <span class="hljs-string">&#x27;$3==&quot;gene&quot; {if(match($9,/ID=([^;]+)/,a)) print $1&quot;\t&quot;($4-1)&quot;\t&quot;$5&quot;\t&quot;a[1]&quot;\t0\t&quot;$7}&#x27;</span> \
+    sample_augustus_clean.gff3 | <span class="hljs-built_in">sort</span> -k1,1 -k2,2n &gt; augustus_genes.bed
+bedtools intersect -a augustus_genes.bed -b liftoff_genes.bed -v -f 0.5 -r &gt; augustus_novel.bed
+awk <span class="hljs-string">&#x27;{print $4}&#x27;</span> augustus_novel.bed &gt; augustus_novel_ids.txt
+agat_sp_filter_feature_from_keep_list.pl \
+    --gff sample_augustus_clean.gff3 \
+    --keep_list augustus_novel_ids.txt \
+    --output sample_augustus_novel.gff3
+sed -i <span class="hljs-string">&#x27;s/\ttranscript\t/\tmRNA\t/&#x27;</span> sample_augustus_novel.gff3
+agat_convert_sp_gxf2gxf.pl --gff sample_augustus_novel.gff3 --output sample_augustus_novel_final.gff3
+
+<span class="hljs-comment"># 6. Prefix novel Augustus IDs to avoid conflicts</span>
+agat_sp_manage_IDs.pl \
+    --gff sample_augustus_novel_final.gff3 \
+    --prefix <span class="hljs-string">&quot;aug_novel_&quot;</span> \
+    --output sample_augustus_novel_prefixed.gff3
+
+<span class="hljs-comment"># 7. Merge Liftoff + novel Augustus (cat only; AGAT for formatting)</span>
+<span class="hljs-built_in">cat</span> <span class="hljs-string">&quot;<span class="hljs-variable">$LIFTOFF_GFF</span>&quot;</span> sample_augustus_novel_prefixed.gff3 &gt; sample_combined_raw.gff3
+agat_convert_sp_gxf2gxf.pl --gff sample_combined_raw.gff3 --output sample_final_merged.gff3
+
+<span class="hljs-comment"># 8. Count verification</span>
+LIFTOFF_COUNT=$(grep -P <span class="hljs-string">&quot;\tgene\t&quot;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$LIFTOFF_GFF</span>&quot;</span> | <span class="hljs-built_in">wc</span> -l)
+NOVEL_COUNT=$(grep -P <span class="hljs-string">&quot;\tgene\t&quot;</span> sample_augustus_novel_prefixed.gff3 | <span class="hljs-built_in">wc</span> -l)
+FINAL_COUNT=$(grep -P <span class="hljs-string">&quot;\tgene\t&quot;</span> sample_final_merged.gff3 | <span class="hljs-built_in">wc</span> -l)
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Liftoff: <span class="hljs-variable">$LIFTOFF_COUNT</span> | Novel: <span class="hljs-variable">$NOVEL_COUNT</span> | Final: <span class="hljs-variable">$FINAL_COUNT</span>&quot;</span>
+
+<span class="hljs-comment"># 9. Verify no novel genes were dropped</span>
+grep -P <span class="hljs-string">&quot;\tgene\t&quot;</span> sample_augustus_novel_prefixed.gff3 \
+    | grep -oP <span class="hljs-string">&#x27;ID=[^;]+&#x27;</span> | sed <span class="hljs-string">&#x27;s/ID=//&#x27;</span> | <span class="hljs-built_in">sort</span> &gt; expected_aug_ids.txt
+grep -P <span class="hljs-string">&quot;\tgene\t&quot;</span> sample_final_merged.gff3 \
+    | grep -oP <span class="hljs-string">&#x27;ID=[^;]+&#x27;</span> | sed <span class="hljs-string">&#x27;s/ID=//&#x27;</span> | grep <span class="hljs-string">&quot;aug_novel_&quot;</span> | <span class="hljs-built_in">sort</span> &gt; actual_aug_ids.txt
+<span class="hljs-built_in">comm</span> -23 expected_aug_ids.txt actual_aug_ids.txt &gt; truly_missing.txt
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Novel genes missing: <span class="hljs-subst">$(wc -l &lt; truly_missing.txt)</span>&quot;</span>
+
+<span class="hljs-comment"># 10. Summary statistics</span>
+agat_sp_statistics.pl --gff sample_final_merged.gff3 -o sample_final_merged.stats.txt
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Pipeline complete. Final annotation: sample_final_merged.gff3&quot;</span>
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="929" data-line-end="930"><a id="Step_18_Extract_Sequences_with_GFFRead_v0129_929"></a>Step 18 — Extract Sequences with GFFRead (v0.12.9)</h2>
+<p class="has-line-data" data-line-start="931" data-line-end="932">Extracts CDS, protein, and transcript sequences from the merged annotation GFF.</p>
+<pre><code class="has-line-data language-bash" data-line-start="934" data-line-end="949"><span class="hljs-comment"># CDS sequences</span>
+gffread /project/&lt;account&gt;/WGS_Data/new_data/sample/11-gene_annotation/sample_final_merged.gff3 \
+  -g /project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta \
+  -x sample_final_merged_cds.fa
+
+<span class="hljs-comment"># Protein sequences</span>
+gffread /project/&lt;account&gt;/WGS_Data/new_data/sample/11-gene_annotation/sample_final_merged.gff3 \
+  -g /project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta \
+  -y sample_final_merged_proteins.fa
+
+<span class="hljs-comment"># Transcript sequences</span>
+gffread /project/&lt;account&gt;/WGS_Data/new_data/sample/11-gene_annotation/sample_final_merged.gff3 \
+  -g /project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/ragtag.scaffold.fasta \
+  -w sample_final_merged_transcripts.fa
+</code></pre>
+<p class="has-line-data" data-line-start="950" data-line-end="951">Clean protein FASTA (remove stops, short seqs, non-standard characters):</p>
+<pre><code class="has-line-data language-bash" data-line-start="953" data-line-end="961">awk <span class="hljs-string">&#x27;BEGIN{RS=&quot;&gt;&quot;; ORS=&quot;&quot;} NR&gt;1 {
+  header=substr($0,1,index($0,&quot;\n&quot;)-1);
+  seq=substr($0,index($0,&quot;\n&quot;)+1);
+  gsub(/[ \t\n]/,&quot;&quot;,seq); seq=toupper(seq);
+  gsub(/\./,&quot;&quot;,seq); gsub(/\*$/,&quot;&quot;,seq);
+  if (length(seq) &gt;= 10) print &quot;&gt;&quot;header&quot;\n&quot;seq&quot;\n&quot;;
+}&#x27;</span> sample.proteins.fa &gt; sample.proteins.clean.fa
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="964" data-line-end="965"><a id="Step_19_BLASTp_vs_UniProt_SwissProt_v2141_964"></a>Step 19 — BLASTp vs UniProt Swiss-Prot (v2.14.1)</h2>
+<p class="has-line-data" data-line-start="966" data-line-end="967">Assigns functional descriptions to predicted proteins via BLASTp against Swiss-Prot.</p>
+<p class="has-line-data" data-line-start="968" data-line-end="969">Prepare database first:</p>
+<pre><code class="has-line-data language-bash" data-line-start="971" data-line-end="975">wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+gunzip uniprot_sprot.fasta.gz
+makeblastdb -<span class="hljs-keyword">in</span> uniprot_sprot.fasta -dbtype prot -parse_seqids -out uniprot_sprot
+</code></pre>
+<pre><code class="has-line-data language-bash" data-line-start="977" data-line-end="1004"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=16</span>
+<span class="hljs-comment">#SBATCH --mem=256000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;Sample_blastp&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=blastp_sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=blastp_sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+module load blast-plus/2.14.1
+
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+QUERY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/12-inter_blastp/sample_final_merged.proteins.clean.fa&quot;</span>
+DB=<span class="hljs-string">&quot;uniprot_sprot&quot;</span>
+OUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/12-inter_blastp/02-blastp/sample_combo_blastp.out&quot;</span>
+
+blastp -query <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY</span>&quot;</span> -db <span class="hljs-string">&quot;<span class="hljs-variable">$DB</span>&quot;</span> -out <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>&quot;</span> -evalue 1e-5 -outfmt 6 -max_target_seqs 5 -num_threads 16
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1007" data-line-end="1008"><a id="Step_20_InterProScan_v5751060_1007"></a>Step 20 — InterProScan (v5.75-106.0)</h2>
+<p class="has-line-data" data-line-start="1009" data-line-end="1010">Assigns functional domains, GO terms, and pathway annotations to proteins via InterProScan array job.</p>
+<p class="has-line-data" data-line-start="1011" data-line-end="1012">Install:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1014" data-line-end="1019">wget https://ftp.ebi.ac.uk/pub/software/unix/iprscan/5/5.75-106.0/interproscan-5.75-106.0-64-bit.tar.gz
+tar -xvzf interproscan-5.75-106.0-64-bit.tar.gz
+<span class="hljs-built_in">cd</span> interproscan-5.75-106.0
+<span class="hljs-built_in">chmod</span> +x interproscan.sh
+</code></pre>
+<pre><code class="has-line-data language-bash" data-line-start="1021" data-line-end="1059"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=sample_interproscan</span>
+<span class="hljs-comment">#SBATCH --array=1-5</span>
+<span class="hljs-comment">#SBATCH --output=iprscan_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=iprscan_%j.err</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=48</span>
+<span class="hljs-comment">#SBATCH --mem=786G</span>
+<span class="hljs-comment">#SBATCH --time=3-00:00:00</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+
+<span class="hljs-built_in">set</span> -euo pipefail
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+INPUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/12-inter_blastp/01-interproscan/split/split.fasta.part_00<span class="hljs-variable">${SLURM_ARRAY_TASK_ID}</span>.fa&quot;</span>
+OUTDIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/12-inter_blastp/01-interproscan/interproscan_out_<span class="hljs-variable">${SLURM_ARRAY_TASK_ID}</span>&quot;</span>
+
+<span class="hljs-built_in">mkdir</span> -p <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span>
+
+<span class="hljs-built_in">export</span> JAVA_OPTS=<span class="hljs-string">&quot;-Xmx740g -XX:+UseG1GC -XX:MaxGCPauseMillis=200&quot;</span>
+
+/project/&lt;account&gt;/WGS_Data/interproscan/interproscan-5.75-106.0/interproscan.sh \
+  -i <span class="hljs-string">&quot;<span class="hljs-variable">$INPUT</span>&quot;</span> \
+  -f tsv,xml \
+  -goterms \
+  -pa \
+  -cpu 16 \
+  -dp --tempdir /project/&lt;account&gt;/WGS_Data/tmp \
+  -b <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/output&quot;</span>
+
+conda deactivate
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="1060" data-line-end="1061"><a id="20a_Incorporate_Functional_Annotations_into_GFF3_1060"></a>20a — Incorporate Functional Annotations into GFF3</h3>
+<p class="has-line-data" data-line-start="1061" data-line-end="1062">Functional descriptions from BLASTp searches against UniProt Swiss-Prot and Gene Ontology (GO) terms from InterProScan were incorporated into the final gene annotation GFF3. Protein product descriptions were assigned to mRNA and CDS features, while GO identifiers were added to mRNA features.</p>
+<p class="has-line-data" data-line-start="1063" data-line-end="1064"><strong><code>inject_functional_annotation.py</code></strong></p>
+<pre><code class="has-line-data language-python" data-line-start="1065" data-line-end="1184"><span class="hljs-comment">#!/usr/bin/env python3</span>
+
+<span class="hljs-keyword">import</span> re
+<span class="hljs-keyword">from</span> urllib.parse <span class="hljs-keyword">import</span> quote
+
+GFF_IN = <span class="hljs-string">&quot;sample_annotation.gff3&quot;</span>
+GFF_OUT = <span class="hljs-string">&quot;sample_functional_annotation.gff3&quot;</span>
+BLAST_FILE = <span class="hljs-string">&quot;sample_blastp.tsv&quot;</span>
+INTERPRO_FILE = <span class="hljs-string">&quot;sample_interproscan.tsv&quot;</span>
+UNIPROT_FASTA = <span class="hljs-string">&quot;uniprot_sprot.fasta&quot;</span>
+
+<span class="hljs-comment"># Extract protein descriptions from UniProt Swiss-Prot</span>
+uniprot_desc = {}
+
+<span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(UNIPROT_FASTA) <span class="hljs-keyword">as</span> f:
+    <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> f:
+        <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;&gt;&quot;</span>):
+            <span class="hljs-keyword">match</span> = re.<span class="hljs-keyword">match</span>(
+                <span class="hljs-string">r&#x27;&gt;sp\|([^|]+)\|[^ ]+ (.+?) OS=&#x27;</span>, line
+            )
+            <span class="hljs-keyword">if</span> <span class="hljs-keyword">match</span>:
+                accession, description = <span class="hljs-keyword">match</span>.groups()
+                uniprot_desc[accession] = description.strip()
+
+<span class="hljs-comment"># Retrieve protein descriptions from BLASTp</span>
+blast_product = {}
+
+<span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(BLAST_FILE) <span class="hljs-keyword">as</span> f:
+    <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> f:
+        <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;#&quot;</span>) <span class="hljs-keyword">or</span> <span class="hljs-keyword">not</span> line.strip():
+            <span class="hljs-keyword">continue</span>
+
+        cols = line.rstrip(<span class="hljs-string">&quot;\n&quot;</span>).split(<span class="hljs-string">&quot;\t&quot;</span>)
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(cols) &lt; <span class="hljs-number">2</span>:
+            <span class="hljs-keyword">continue</span>
+
+        query, subject = cols[:<span class="hljs-number">2</span>]
+        <span class="hljs-keyword">match</span> = re.<span class="hljs-keyword">match</span>(<span class="hljs-string">r&#x27;sp\|([^|]+)\|&#x27;</span>, subject)
+        accession = <span class="hljs-keyword">match</span>.group(<span class="hljs-number">1</span>) <span class="hljs-keyword">if</span> <span class="hljs-keyword">match</span> <span class="hljs-keyword">else</span> subject
+
+        description = uniprot_desc.get(accession)
+
+        <span class="hljs-keyword">if</span> description:
+            description = re.sub(
+                <span class="hljs-string">r&#x27;\s*\(Fragment\)&#x27;</span>, <span class="hljs-string">&#x27;&#x27;</span>, description
+            ).strip()
+
+            <span class="hljs-keyword">if</span> description.lower() != <span class="hljs-string">&quot;uncharacterized protein&quot;</span>:
+                <span class="hljs-comment"># The input BLASTp file is expected to have</span>
+                <span class="hljs-comment"># its best hit listed first for each query.</span>
+                blast_product.setdefault(query, description)
+
+<span class="hljs-comment"># Retrieve GO terms from InterProScan</span>
+go_terms = {}
+
+<span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(INTERPRO_FILE) <span class="hljs-keyword">as</span> f:
+    <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> f:
+        cols = line.rstrip(<span class="hljs-string">&quot;\n&quot;</span>).split(<span class="hljs-string">&quot;\t&quot;</span>)
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(cols) &lt; <span class="hljs-number">14</span>:
+            <span class="hljs-keyword">continue</span>
+
+        transcript_id = cols[<span class="hljs-number">0</span>]
+        terms = re.findall(<span class="hljs-string">r&#x27;GO:\d+&#x27;</span>, cols[<span class="hljs-number">13</span>])
+
+        <span class="hljs-keyword">if</span> terms:
+            go_terms.setdefault(transcript_id, <span class="hljs-built_in">set</span>()).update(terms)
+
+<span class="hljs-comment"># Incorporate annotations into GFF3</span>
+<span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(GFF_IN) <span class="hljs-keyword">as</span> fin, <span class="hljs-built_in">open</span>(GFF_OUT, <span class="hljs-string">&quot;w&quot;</span>) <span class="hljs-keyword">as</span> fout:
+    <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> fin:
+        <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;#&quot;</span>) <span class="hljs-keyword">or</span> <span class="hljs-keyword">not</span> line.strip():
+            fout.write(line)
+            <span class="hljs-keyword">continue</span>
+
+        cols = line.rstrip(<span class="hljs-string">&quot;\n&quot;</span>).split(<span class="hljs-string">&quot;\t&quot;</span>)
+
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(cols) &lt; <span class="hljs-number">9</span> <span class="hljs-keyword">or</span> cols[<span class="hljs-number">2</span>] <span class="hljs-keyword">not</span> <span class="hljs-keyword">in</span> (<span class="hljs-string">&quot;mRNA&quot;</span>, <span class="hljs-string">&quot;CDS&quot;</span>):
+            fout.write(line)
+            <span class="hljs-keyword">continue</span>
+
+        attrs = cols[<span class="hljs-number">8</span>]
+        feature = cols[<span class="hljs-number">2</span>]
+
+        key = <span class="hljs-string">&quot;ID&quot;</span> <span class="hljs-keyword">if</span> feature == <span class="hljs-string">&quot;mRNA&quot;</span> <span class="hljs-keyword">else</span> <span class="hljs-string">&quot;Parent&quot;</span>
+        <span class="hljs-keyword">match</span> = re.search(
+            <span class="hljs-string">rf&#x27;(?:^|;)<span class="hljs-subst">{key}</span>=([^;]+)&#x27;</span>, attrs
+        )
+
+        <span class="hljs-keyword">if</span> <span class="hljs-keyword">match</span>:
+            transcript_id = <span class="hljs-keyword">match</span>.group(<span class="hljs-number">1</span>)
+
+            <span class="hljs-keyword">if</span> <span class="hljs-string">&quot;product=&quot;</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">in</span> attrs:
+                product = blast_product.get(
+                    transcript_id, <span class="hljs-string">&quot;hypothetical protein&quot;</span>
+                )
+
+                <span class="hljs-comment"># Escape reserved characters in GFF3 attributes.</span>
+                product = quote(
+                    product, safe=<span class="hljs-string">&quot;ABCDEFGHIJKLMNOPQRSTUVWXYZ&quot;</span>
+                    <span class="hljs-string">&quot;abcdefghijklmnopqrstuvwxyz0123456789&quot;</span>
+                    <span class="hljs-string">&quot; ._:-&quot;</span>
+                )
+
+                attrs += <span class="hljs-string">f&quot;;product=<span class="hljs-subst">{product}</span>&quot;</span>
+
+            <span class="hljs-keyword">if</span> feature == <span class="hljs-string">&quot;mRNA&quot;</span> <span class="hljs-keyword">and</span> <span class="hljs-string">&quot;Ontology_term=&quot;</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">in</span> attrs:
+                terms = go_terms.get(transcript_id)
+
+                <span class="hljs-keyword">if</span> terms:
+                    attrs += (
+                        <span class="hljs-string">&quot;;Ontology_term=&quot;</span>
+                        + <span class="hljs-string">&quot;,&quot;</span>.join(<span class="hljs-built_in">sorted</span>(terms))
+                    )
+
+        cols[<span class="hljs-number">8</span>] = attrs
+        fout.write(<span class="hljs-string">&quot;\t&quot;</span>.join(cols) + <span class="hljs-string">&quot;\n&quot;</span>)
+
+<span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;Functional annotation written to <span class="hljs-subst">{GFF_OUT}</span>&quot;</span>)
+</code></pre>
+<p class="has-line-data" data-line-start="1185" data-line-end="1186"><strong>Note:</strong> This script expects BLASTp results with the best alignment reported first for each query, as well as matching transcript identifiers across the protein FASTA, BLASTp output, InterProScan output, and GFF3.</p>
+<h3 class="code-line has-line-data" data-line-start="1187" data-line-end="1188"><a id="20b_Filter_InterProScan_Functional_Annotation_Results_1187"></a>20b — Filter InterProScan Functional Annotation Results</h3>
+<p class="has-line-data" data-line-start="1188" data-line-end="1189">InterProScan results were filtered to retain records with assigned InterPro identifiers. Selected annotation fields were extracted, and duplicate transcript–InterPro combinations were removed to generate a simplified functional annotation table.</p>
+<p class="has-line-data" data-line-start="1190" data-line-end="1191"><strong><code>filter_interproscan.py</code></strong></p>
+<pre><code class="has-line-data language-python" data-line-start="1193" data-line-end="1248"><span class="hljs-comment">#!/usr/bin/env python3</span>
+
+<span class="hljs-keyword">import</span> pandas <span class="hljs-keyword">as</span> pd
+
+INPUT = <span class="hljs-string">&quot;sample_interproscan.tsv&quot;</span>
+OUTPUT = <span class="hljs-string">&quot;sample_functional_annotation.tsv&quot;</span>
+
+cols_to_keep = [<span class="hljs-number">0</span>, <span class="hljs-number">3</span>, <span class="hljs-number">5</span>, <span class="hljs-number">11</span>, <span class="hljs-number">12</span>, <span class="hljs-number">13</span>]
+
+colnames = [
+    <span class="hljs-string">&quot;Gene_ID&quot;</span>,
+    <span class="hljs-string">&quot;Analysis&quot;</span>,
+    <span class="hljs-string">&quot;Signature_Description&quot;</span>,
+    <span class="hljs-string">&quot;InterPro_ID&quot;</span>,
+    <span class="hljs-string">&quot;InterPro_Description&quot;</span>,
+    <span class="hljs-string">&quot;GO_Terms&quot;</span>
+]
+
+chunks = []
+
+<span class="hljs-keyword">for</span> chunk <span class="hljs-keyword">in</span> pd.read_csv(
+    INPUT,
+    sep=<span class="hljs-string">&quot;\t&quot;</span>,
+    header=<span class="hljs-literal">None</span>,
+    usecols=cols_to_keep,
+    names=colnames,
+    dtype=<span class="hljs-built_in">str</span>,
+    chunksize=<span class="hljs-number">100000</span>
+):
+    chunk = chunk[
+        chunk[<span class="hljs-string">&quot;InterPro_ID&quot;</span>].notna()
+        &amp; (chunk[<span class="hljs-string">&quot;InterPro_ID&quot;</span>] != <span class="hljs-string">&quot;-&quot;</span>)
+    ]
+
+    chunk = chunk.drop_duplicates(
+        subset=[<span class="hljs-string">&quot;Gene_ID&quot;</span>, <span class="hljs-string">&quot;InterPro_ID&quot;</span>]
+    )
+
+    chunks.append(chunk)
+
+<span class="hljs-keyword">if</span> chunks:
+    final_df = pd.concat(chunks, ignore_index=<span class="hljs-literal">True</span>)
+
+    final_df = final_df.drop_duplicates(
+        subset=[<span class="hljs-string">&quot;Gene_ID&quot;</span>, <span class="hljs-string">&quot;InterPro_ID&quot;</span>]
+    )
+
+    final_df = final_df.sort_values(<span class="hljs-string">&quot;Gene_ID&quot;</span>)
+<span class="hljs-keyword">else</span>:
+    final_df = pd.DataFrame(columns=colnames)
+
+final_df.to_csv(OUTPUT, sep=<span class="hljs-string">&quot;\t&quot;</span>, index=<span class="hljs-literal">False</span>)
+
+<span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;Filtered annotations written to <span class="hljs-subst">{OUTPUT}</span>&quot;</span>)
+</code></pre>
+<p class="has-line-data" data-line-start="1248" data-line-end="1249">The resulting table contains transcript identifiers, analysis source, signature descriptions, InterPro identifiers and descriptions, and associated GO terms.</p>
+<pre><code class="has-line-data" data-line-start="1250" data-line-end="1254">---
+---
+
+</code></pre>
+<h2 class="code-line has-line-data" data-line-start="1254" data-line-end="1255"><a id="Step_21_Dotplot_NUCmer_per_Chromosome_v401_MUMmer_1254"></a>Step 21 — Dotplot (NUCmer per Chromosome) (v4.0.1 — MUMmer)</h2>
+<p class="has-line-data" data-line-start="1256" data-line-end="1257">Generates per-chromosome dotplots between the new assembly and a reference (e.g., Chinese Spring).</p>
+<pre><code class="has-line-data language-bash" data-line-start="1259" data-line-end="1315"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --ntasks=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=768000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;mummer_dotplot&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+CS=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/cs.21chr.fa&quot;</span>
+MAD=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/sample.21chr.fa&quot;</span>
+
+<span class="hljs-built_in">mkdir</span> -p per_chr nucmer_out
+
+chroms=(Chr1A Chr1B Chr1D Chr2A Chr2B Chr2D Chr3A Chr3B Chr3D \
+        Chr4A Chr4B Chr4D Chr5A Chr5B Chr5D Chr6A Chr6B Chr6D \
+        Chr7A Chr7B Chr7D)
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Extracting chromosomes...&quot;</span>
+<span class="hljs-keyword">for</span> chr <span class="hljs-keyword">in</span> <span class="hljs-string">&quot;<span class="hljs-variable">${chroms[@]}</span>&quot;</span>; <span class="hljs-keyword">do</span>
+    samtools faidx <span class="hljs-variable">$CS</span> <span class="hljs-variable">$chr</span> &gt; per_chr/<span class="hljs-string">&quot;<span class="hljs-variable">${chr}</span>_CS.fa&quot;</span>
+    samtools faidx <span class="hljs-variable">$MAD</span> <span class="hljs-variable">$chr</span> &gt; per_chr/<span class="hljs-string">&quot;<span class="hljs-variable">${chr}</span>_SAM.fa&quot;</span>
+<span class="hljs-keyword">done</span>
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Running NUCmer per chromosome...&quot;</span>
+<span class="hljs-keyword">for</span> chr <span class="hljs-keyword">in</span> <span class="hljs-string">&quot;<span class="hljs-variable">${chroms[@]}</span>&quot;</span>; <span class="hljs-keyword">do</span>
+    ref=per_chr/<span class="hljs-variable">${chr}</span>_CS.fa
+    qry=per_chr/<span class="hljs-variable">${chr}</span>_SAM.fa
+    out=nucmer_out/<span class="hljs-variable">${chr}</span>
+    nucmer --maxmatch -l 100 -c 500 -p <span class="hljs-variable">$out</span> <span class="hljs-variable">$ref</span> <span class="hljs-variable">$qry</span>
+    delta-filter -1 <span class="hljs-variable">${out}</span>.delta &gt; <span class="hljs-variable">${out}</span>.1to1.delta
+    show-coords -rcl <span class="hljs-variable">${out}</span>.1to1.delta &gt; <span class="hljs-variable">${out}</span>.coords
+<span class="hljs-keyword">done</span>
+
+<span class="hljs-keyword">for</span> chr <span class="hljs-keyword">in</span> Chr1A Chr1B Chr1D Chr2A Chr2B Chr2D Chr3A Chr3B Chr3D \
+           Chr4A Chr4B Chr4D Chr5A Chr5B Chr5D Chr6A Chr6B Chr6D Chr7A Chr7B Chr7D; <span class="hljs-keyword">do</span>
+    delta-filter -i 98 -l 15000 <span class="hljs-variable">${chr}</span>.delta &gt; <span class="hljs-variable">${chr}</span>.filtered.delta
+    mummerplot --large --png --layout -p <span class="hljs-variable">${chr}</span> <span class="hljs-variable">${chr}</span>.filtered.delta
+<span class="hljs-keyword">done</span>
+
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1318" data-line-end="1319"><a id="Step_22_MUMmer_NUCmer_WholeGenome_v401_1318"></a>Step 22 — MUMmer / NUCmer Whole-Genome (v4.0.1)</h2>
+<p class="has-line-data" data-line-start="1320" data-line-end="1321">Runs whole-genome NUCmer alignment for synteny/SyRI input.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1323" data-line-end="1355"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=768000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;mummer_sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+REF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/cs.21chr.fa&quot;</span>
+QUERY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/sample.21chr.fa&quot;</span>
+OUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/13-synteny/02-syri/&quot;</span>
+
+nucmer --prefix=<span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_cs&quot;</span> --maxmatch -l 100 -c 500 <span class="hljs-string">&quot;<span class="hljs-variable">$REF</span>&quot;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY</span>&quot;</span>
+delta-filter -i 95 -l 5000 <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_cs.delta&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_cs.filtered.delta&quot;</span>
+show-coords -THrd <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_cs.filtered.delta&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_cs.filtered.coords&quot;</span>
+
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1358" data-line-end="1359"><a id="Step_23_SyRI_v171_PlotSR_v110_1358"></a>Step 23 — SyRI (v1.7.1) + PlotSR (v1.1.0)</h2>
+<p class="has-line-data" data-line-start="1360" data-line-end="1361">Identifies structural rearrangements (inversions, translocations) and visualizes synteny between assemblies.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1363" data-line-end="1397"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=48</span>
+<span class="hljs-comment">#SBATCH --mem=256000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=8-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;syri&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=syri_sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=syri_sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+COORDS=<span class="hljs-string">&quot;sam_vs_cs.filtered.coords&quot;</span>
+REF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/cs.21chr.fa&quot;</span>
+QUERY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/sam.21chr.fa&quot;</span>
+
+syri -c <span class="hljs-string">&quot;<span class="hljs-variable">$COORDS</span>&quot;</span> -r <span class="hljs-string">&quot;<span class="hljs-variable">$REF</span>&quot;</span> -q <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY</span>&quot;</span> -F T -k --nosnp --nc 40
+
+<span class="hljs-comment"># Filter to events ≥10 kb query and plot</span>
+awk <span class="hljs-string">&#x27;($3 - $2 &gt;= 10000) &amp;&amp; ($8 - $7 &gt;= 10000)&#x27;</span> syri.out &gt; syri.filtered10k.out
+plotsr --sr syri.filtered10k.out --genomes genomes.txt --nodup -o Output.png
+
+conda deactivate
+</code></pre>
+<pre><code class="has-line-data language-markdown" data-line-start="1398" data-line-end="1406"><span class="hljs-code">`genomes.txt`</span> (tab-delimited; first line is the header):
+
+<span class="hljs-code">```text
+#file	name	tags
+/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/cs.21chr.fa	Chinese_Spring	lw:1.5
+/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/sample.21chr.fa	Sample	lw:1.5
+```</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1409" data-line-end="1410"><a id="Step_24_MCScanX_Synteny_Collinearity_v100_1409"></a>Step 24 — MCScanX Synteny &amp; Collinearity (v1.0.0)</h2>
+<p class="has-line-data" data-line-start="1411" data-line-end="1412">Detects collinear gene blocks between the new assembly and a reference proteome using MCScanX.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1414" data-line-end="1509"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=640G</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;mcscanx_sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -euo pipefail
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+SAMPLE_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/11-gene_annotation/sample_final_merged.gff3&quot;</span>
+SAMPLE_PEP=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/12-inter_blastp/sample_final_merged.proteins.clean.fa&quot;</span>
+CS_GFF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/iwgsc2.1.HC.gff3&quot;</span>
+CS_PEP=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/IWGSC2.1/iwgsc2.1.HC.pep.fasta&quot;</span>
+OUTDIR=<span class="hljs-string">&quot;data&quot;</span>
+<span class="hljs-built_in">mkdir</span> -p <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span>
+
+<span class="hljs-comment"># Step 1: Extract GFF for MCScanX (chr, gene, start, end with strand handling)</span>
+<span class="hljs-function"><span class="hljs-title">extract_gff</span></span> () {
+    <span class="hljs-built_in">local</span> gff=<span class="hljs-variable">$1</span>; <span class="hljs-built_in">local</span> outgff=<span class="hljs-variable">$2</span>; <span class="hljs-built_in">local</span> chr_prefix=<span class="hljs-variable">$3</span>; <span class="hljs-built_in">local</span> gene_prefix=<span class="hljs-variable">$4</span>
+    awk -v chr_pref=<span class="hljs-string">&quot;<span class="hljs-variable">$chr_prefix</span>&quot;</span> -v gene_pref=<span class="hljs-string">&quot;<span class="hljs-variable">$gene_prefix</span>&quot;</span> <span class="hljs-string">&#x27;
+    BEGIN {OFS=&quot;\t&quot;}
+    $3 == &quot;gene&quot; {
+        split($9, a, &quot;;&quot;);
+        for (i in a) {
+            if (a[i] ~ /^ID=/) {
+                gsub(/^ID=/, &quot;&quot;, a[i]); gene_id = a[i];
+                sub(/\.[0-9]+$/, &quot;&quot;, gene_id); sub(/\.t[0-9]+$/, &quot;&quot;, gene_id);
+                chr_raw = $1;
+                if (chr_raw ~ /^[Cc]hr/) { sub(/^[Cc]hr/, &quot;&quot;, chr_raw); sub(/_RagTag$/, &quot;&quot;, chr_raw); chr = chr_pref chr_raw; }
+                else { chr = chr_pref chr_raw; }
+                start=$4; end=$5; strand=$7;
+                if (strand == &quot;-&quot;) { print chr, gene_pref gene_id, end, start; }
+                else               { print chr, gene_pref gene_id, start, end; }
+            }
+        }
+    }&#x27;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$gff</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$outgff</span>&quot;</span>
+}
+extract_gff <span class="hljs-string">&quot;<span class="hljs-variable">$SAMPLE_GFF</span>&quot;</span> sample.mc.gff <span class="hljs-string">&quot;ma&quot;</span> <span class="hljs-string">&quot;ma_&quot;</span>
+extract_gff <span class="hljs-string">&quot;<span class="hljs-variable">$CS_GFF</span>&quot;</span>    cs.mc.gff    <span class="hljs-string">&quot;cs&quot;</span> <span class="hljs-string">&quot;cs_&quot;</span>
+
+<span class="hljs-comment"># Step 2: Combine and sort GFF</span>
+<span class="hljs-built_in">cat</span> sample.mc.gff cs.mc.gff &gt; combined.mc.gff
+<span class="hljs-built_in">sort</span> -k1,1 -k3,3n combined.mc.gff &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.gff&quot;</span>
+
+<span class="hljs-comment"># Step 3: Clean PEP headers</span>
+<span class="hljs-function"><span class="hljs-title">clean_pep</span></span> () {
+    <span class="hljs-built_in">local</span> pep=<span class="hljs-variable">$1</span>; <span class="hljs-built_in">local</span> out=<span class="hljs-variable">$2</span>; <span class="hljs-built_in">local</span> prefix=<span class="hljs-variable">$3</span>
+    awk -v pref=<span class="hljs-string">&quot;<span class="hljs-variable">$prefix</span>&quot;</span> <span class="hljs-string">&#x27;/^&gt;/ { sub(/^&gt;/, &quot;&quot;, $0); id=$0; sub(/\.[0-9]+$/, &quot;&quot;, id); sub(/\.t[0-9]+$/, &quot;&quot;, id); print &quot;&gt;&quot; pref id; next } {print}&#x27;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$pep</span>&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$out</span>&quot;</span>
+}
+clean_pep <span class="hljs-string">&quot;<span class="hljs-variable">$SAMPLE_PEP</span>&quot;</span> sample.cleaned.pep <span class="hljs-string">&quot;ma_&quot;</span>
+clean_pep <span class="hljs-string">&quot;<span class="hljs-variable">$CS_PEP</span>&quot;</span>     cs.cleaned.pep    <span class="hljs-string">&quot;cs_&quot;</span>
+
+<span class="hljs-comment"># Step 4: Combine PEP, keep longest per ID</span>
+<span class="hljs-built_in">cat</span> sample.cleaned.pep cs.cleaned.pep &gt; combined.pep.tmp
+awk <span class="hljs-string">&#x27;/^&gt;/ {
+    if (seq_id &amp;&amp; length(seq) &gt; maxlen[seq_id]) { seqs[seq_id]=seq; maxlen[seq_id]=length(seq); }
+    seq_id=substr($0,2); seq=&quot;&quot;; next
+} { seq=seq $0 }
+END { if (length(seq) &gt; maxlen[seq_id]) { seqs[seq_id]=seq; maxlen[seq_id]=length(seq); }
+      for (id in seqs) { print &quot;&gt;&quot; id &quot;\n&quot; seqs[id]; }
+}&#x27;</span> combined.pep.tmp &gt; combined.pep.clean.fa
+awk <span class="hljs-string">&#x27;/^&gt;/ {print; next} {gsub(/[^ACDEFGHIKLMNPQRSTVWY]/, &quot;&quot;); print}&#x27;</span> combined.pep.clean.fa &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.pep&quot;</span>
+
+<span class="hljs-comment"># Step 5: BLAST all-vs-all</span>
+makeblastdb -<span class="hljs-keyword">in</span> <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.pep&quot;</span> -dbtype prot -parse_seqids -out <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs_db&quot;</span>
+blastp -query <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.pep&quot;</span> -db <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs_db&quot;</span> \
+       -out <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.blast&quot;</span> -evalue 1e-5 -outfmt 6 -max_target_seqs 5 -num_threads 16
+
+<span class="hljs-comment"># Step 6: Filter BLAST to match GFF IDs</span>
+<span class="hljs-built_in">cut</span> -f2 <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.gff&quot;</span> | <span class="hljs-built_in">sort</span> -u &gt; gff_ids.txt
+awk <span class="hljs-string">&#x27;FNR==NR {a[$1]=1; next} a[$1] &amp;&amp; a[$2]&#x27;</span> gff_ids.txt <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.blast&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.filtered.blast&quot;</span>
+<span class="hljs-built_in">mv</span> <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.filtered.blast&quot;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>/ma_cs.blast&quot;</span>
+
+<span class="hljs-comment"># Step 7: Run MCScanX</span>
+MCSCANX_PATH=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/MCScanX&quot;</span>
+<span class="hljs-built_in">cd</span> <span class="hljs-string">&quot;<span class="hljs-variable">$OUTDIR</span>&quot;</span>
+<span class="hljs-variable">$MCSCANX_PATH</span>/MCScanX ma_cs
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Done! Check <span class="hljs-variable">$OUTDIR</span>/ma_cs.collinearity for results.&quot;</span>
+
+conda deactivate
+</code></pre>
+<p class="has-line-data" data-line-start="1509" data-line-end="1510">The collinearity results from MCScanX (.collinearity and .gff files) were visualized using AccuSyn (<a href="https://accusyn.usask.ca/">https://accusyn.usask.ca/</a>), a web-based tool for interactive synteny visualization.</p>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1513" data-line-end="1514"><a id="Step_25_Mashmap_v313_1513"></a>Step 25 — Mashmap (v3.1.3)</h2>
+<p class="has-line-data" data-line-start="1515" data-line-end="1516">Computes approximate whole-genome alignments for large-scale structural comparisons.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1518" data-line-end="1553"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=24</span>
+<span class="hljs-comment">#SBATCH --mem=768000</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=&quot;mashmap_sample&quot;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=sample_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=sample_%j.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+<span class="hljs-built_in">set</span> -e
+<span class="hljs-built_in">set</span> -x
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+REF=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/ref_genome_A.fa&quot;</span>
+QUERY=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/genome.file/ref_genome_B.fa&quot;</span>
+OUT=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/14-translocation/02-mashmap/&quot;</span>
+
+mashmap -s 50000 --perc_identity 98 --filter_mode one-to-one -t 12 \
+  -o <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_ref_50k.paf&quot;</span> -r <span class="hljs-string">&quot;<span class="hljs-variable">$REF</span>&quot;</span> -q <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY</span>&quot;</span>
+
+<span class="hljs-comment"># Filter specific chromosomes</span>
+awk <span class="hljs-string">&#x27;$1 == &quot;Chr2A&quot; {split($13, a, &quot;:&quot;); if (a[3] &gt; 0.98) print $0}&#x27;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_ref_50k.paf&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/Chr2A_98_50k.paf&quot;</span>
+awk <span class="hljs-string">&#x27;$1 == &quot;Chr7D&quot; {split($13, a, &quot;:&quot;); if (a[3] &gt; 0.98) print $0}&#x27;</span> <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/sam_vs_ref_50k.paf&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">$OUT</span>/Chr7D_98_50k.paf&quot;</span>
+
+conda deactivate
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1556" data-line-end="1557"><a id="Step_26_BLASTn_for_Translocation_Analysis_v2160_1556"></a>Step 26 — BLASTn for Translocation Analysis (v2.16.0)</h2>
+<p class="has-line-data" data-line-start="1558" data-line-end="1559">Aligns specific query sequences against a target chromosome to investigate translocation breakpoints.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1561" data-line-end="1597"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --nodes=1</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=4</span>
+<span class="hljs-comment">#SBATCH --mem=256G</span>
+<span class="hljs-comment">#SBATCH --qos=normal</span>
+<span class="hljs-comment">#SBATCH --time=14-00:00:00</span>
+<span class="hljs-comment">#SBATCH --job-name=blast_chr_batch</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+<span class="hljs-comment">#SBATCH --output=blast_chr_batch.out</span>
+<span class="hljs-comment">#SBATCH --error=blast_chr_batch.err</span>
+<span class="hljs-comment">#SBATCH --export=ALL</span>
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+QUERY_FILE=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/14-translocation/01-blast/query_sequences.fa&quot;</span>
+DB_DIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/14-translocation/01-blast/&quot;</span>
+DB_NAME=<span class="hljs-string">&quot;sam.2a_db&quot;</span>
+OUTPUT_DIR=<span class="hljs-string">&quot;/project/&lt;account&gt;/WGS_Data/new_data/sample/14-translocation/01-blast/output&quot;</span>
+BASE_NAME=$(<span class="hljs-built_in">basename</span> <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY_FILE</span>&quot;</span> .fa)
+
+blastn -query <span class="hljs-string">&quot;<span class="hljs-variable">$QUERY_FILE</span>&quot;</span> -db <span class="hljs-variable">${DB_DIR}</span>/<span class="hljs-variable">${DB_NAME}</span> \
+    -out <span class="hljs-string">&quot;<span class="hljs-variable">${OUTPUT_DIR}</span>/<span class="hljs-variable">${BASE_NAME}</span>_vs_chr.txt&quot;</span> \
+    -evalue 1e-10 -num_threads 4 \
+    -outfmt <span class="hljs-string">&quot;6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore&quot;</span>
+
+<span class="hljs-comment"># Create summary table (coordinates in base pairs)</span>
+awk -v base=<span class="hljs-string">&quot;<span class="hljs-variable">$BASE_NAME</span>&quot;</span> <span class="hljs-string">&#x27;
+    BEGIN { OFS=&quot;\t&quot;; print &quot;Query&quot;,&quot;Subject&quot;,&quot;Identity(%)&quot;,&quot;Align_Len&quot;,&quot;Q_start&quot;,&quot;Q_end&quot;,&quot;Chr_Start(bp)&quot;,&quot;Chr_End(bp)&quot;,&quot;Evalue&quot;,&quot;BitScore&quot; }
+    { printf &quot;%s\t%s\t%.2f\t%d\t%d\t%d\t%d\t%d\t%e\t%.1f\n&quot;, $1,$2,$3,$4,$7,$8,$9,$10,$11,$12 }
+&#x27;</span> <span class="hljs-string">&quot;<span class="hljs-variable">${OUTPUT_DIR}</span>/<span class="hljs-variable">${BASE_NAME}</span>_vs_chr.txt&quot;</span> &gt; <span class="hljs-string">&quot;<span class="hljs-variable">${OUTPUT_DIR}</span>/<span class="hljs-variable">${BASE_NAME}</span>_summary_bp.txt&quot;</span>
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="1600" data-line-end="1601"><a id="Step_27_Genome_Visualization_Using_Circos_1600"></a>Step 27 — Genome Visualization Using Circos</h2>
+<p class="has-line-data" data-line-start="1601" data-line-end="1603"><strong>Source:</strong> <a href="https://github.com/vigsterkr/circos">https://github.com/vigsterkr/circos</a><br>
+Generates a circular genome visualization showing GC content, gene density (main + novel), and TE density across 21 chromosomes.</p>
+<h3 class="code-line has-line-data" data-line-start="1604" data-line-end="1605"><a id="27a_Prepare_Data_prep_dataslurm_1604"></a>27a — Prepare Data (<code>prep_data.slurm</code>)</h3>
+<p class="has-line-data" data-line-start="1606" data-line-end="1607">Runs all data preparation scripts sequentially.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1609" data-line-end="1636"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=circos_prep</span>
+<span class="hljs-comment">#SBATCH --output=logs/prep_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=logs/prep_%j.err</span>
+<span class="hljs-comment">#SBATCH --time=04:00:00</span>
+<span class="hljs-comment">#SBATCH --mem=32G</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=4</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+<span class="hljs-built_in">mkdir</span> -p logs results data
+
+bash 01_karyotype.sh           &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;01 done&quot;</span> \
+&amp;&amp; bash 02_windows.sh          &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;02 done&quot;</span> \
+&amp;&amp; bash 03_gene_density_main.sh    &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;03 done&quot;</span> \
+&amp;&amp; bash 04_gene_density_novel.sh   &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;04 done&quot;</span> \
+&amp;&amp; bash 05_te_density.sh       &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;05 done&quot;</span> \
+&amp;&amp; bash 06_gc_content.sh       &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;06 done&quot;</span>
+
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;All prep complete&quot;</span>
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="1637" data-line-end="1638"><a id="27b_Individual_Data_Scripts_1637"></a>27b — Individual Data Scripts</h3>
+<p class="has-line-data" data-line-start="1639" data-line-end="1640"><strong><code>01_karyotype.sh</code></strong> — Extracts chromosome sizes and builds Circos karyotype file:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1642" data-line-end="1649"><span class="hljs-meta">#!/bin/bash</span>
+FA=/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/sam.21chr.fa
+
+grep -P <span class="hljs-string">&quot;^Chr[1-7][ABD]\t&quot;</span> <span class="hljs-variable">${FA}</span>.fai | <span class="hljs-built_in">cut</span> -f1,2 | <span class="hljs-built_in">sort</span> -k1,1V &gt; chrom_sizes.txt
+python3 make_karyotype.py chrom_sizes.txt &gt; karyotype.txt
+<span class="hljs-built_in">cat</span> karyotype.txt
+</code></pre>
+<p class="has-line-data" data-line-start="1650" data-line-end="1651"><strong><code>make_karyotype.py</code></strong> — Converts chromosome sizes to Circos karyotype format, coloring by subgenome (A/B/D):</p>
+<pre><code class="has-line-data language-python" data-line-start="1653" data-line-end="1666"><span class="hljs-comment"># Usage: python3 make_karyotype.py chrom_sizes.txt &gt; karyotype.txt</span>
+<span class="hljs-keyword">import</span> sys
+
+colors = {<span class="hljs-string">&#x27;A&#x27;</span>: <span class="hljs-string">&#x27;subA&#x27;</span>, <span class="hljs-string">&#x27;B&#x27;</span>: <span class="hljs-string">&#x27;subB&#x27;</span>, <span class="hljs-string">&#x27;D&#x27;</span>: <span class="hljs-string">&#x27;subD&#x27;</span>}
+
+<span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(sys.argv[<span class="hljs-number">1</span>]) <span class="hljs-keyword">as</span> f:
+    <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> f:
+        chrom, size = line.strip().split(<span class="hljs-string">&#x27;\t&#x27;</span>)
+        subgenome = chrom[-<span class="hljs-number">1</span>]
+        label = chrom.replace(<span class="hljs-string">&#x27;Chr&#x27;</span>, <span class="hljs-string">&#x27;&#x27;</span>)
+        color = colors.get(subgenome, <span class="hljs-string">&#x27;grey&#x27;</span>)
+        <span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;chr - <span class="hljs-subst">{chrom}</span> <span class="hljs-subst">{label}</span> 0 <span class="hljs-subst">{size}</span> <span class="hljs-subst">{color}</span>&quot;</span>)
+</code></pre>
+<p class="has-line-data" data-line-start="1667" data-line-end="1668"><strong><code>02_windows.sh</code></strong> — Creates 5 Mb genomic windows for density calculations:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1670" data-line-end="1674"><span class="hljs-meta">#!/bin/bash</span>
+bedtools makewindows -g chrom_sizes.txt -w 5000000 &gt; windows_5mb.bed
+<span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Windows: <span class="hljs-subst">$(wc -l &lt; windows_5mb.bed)</span>&quot;</span>
+</code></pre>
+<p class="has-line-data" data-line-start="1675" data-line-end="1676"><strong><code>03_gene_density_main.sh</code></strong> — Computes main annotation gene density per 5 Mb window (genes/Mb):</p>
+<pre><code class="has-line-data language-bash" data-line-start="1678" data-line-end="1691"><span class="hljs-meta">#!/bin/bash</span>
+GFF=/project/&lt;account&gt;/WGS_Data/new_data/sample/11-gene_annotation/sample_final_merged.gff3
+
+grep -v <span class="hljs-string">&quot;^#&quot;</span> <span class="hljs-variable">$GFF</span> | awk <span class="hljs-string">&#x27;$3==&quot;gene&quot;&#x27;</span> \
+    | grep -P <span class="hljs-string">&quot;^chr[1-7][ABD]_RagTag\t&quot;</span> \
+    | sed <span class="hljs-string">&#x27;s/chr\([1-7][ABD]\)_RagTag/Chr\1/g&#x27;</span> \
+    | awk <span class="hljs-string">&#x27;{print $1&quot;\t&quot;($4-1)&quot;\t&quot;$5}&#x27;</span> | <span class="hljs-built_in">sort</span> -k1,1 -k2,2n &gt; genes_main.bed
+
+bedtools intersect -a windows_5mb.bed -b genes_main.bed -c &gt; gene_density_main_raw.txt
+
+awk <span class="hljs-string">&#x27;{window_mb=($3-$2)/1000000; density=$4/window_mb; printf &quot;%s\t%s\t%s\t%.4f\n&quot;,$1,$2,$3,density}&#x27;</span> \
+    gene_density_main_raw.txt &gt; gene_density_main.txt
+</code></pre>
+<p class="has-line-data" data-line-start="1692" data-line-end="1693"><strong><code>04_gene_density_novel.sh</code></strong> — Computes novel Augustus gene density per 5 Mb window:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1695" data-line-end="1708"><span class="hljs-meta">#!/bin/bash</span>
+GFF=/project/&lt;account&gt;/WGS_Data/new_data/sample/11-gene_annotation/sample_augustus_novel_final.gff3
+
+grep -v <span class="hljs-string">&quot;^#&quot;</span> <span class="hljs-variable">$GFF</span> | awk <span class="hljs-string">&#x27;$3==&quot;gene&quot;&#x27;</span> \
+    | grep -P <span class="hljs-string">&quot;^chr[1-7][ABD]_RagTag\t&quot;</span> \
+    | sed <span class="hljs-string">&#x27;s/chr\([1-7][ABD]\)_RagTag/Chr\1/g&#x27;</span> \
+    | awk <span class="hljs-string">&#x27;{print $1&quot;\t&quot;($4-1)&quot;\t&quot;$5}&#x27;</span> | <span class="hljs-built_in">sort</span> -k1,1 -k2,2n &gt; genes_novel.bed
+
+bedtools intersect -a windows_5mb.bed -b genes_novel.bed -c &gt; gene_density_novel_raw.txt
+
+awk <span class="hljs-string">&#x27;{window_mb=($3-$2)/1000000; density=$4/window_mb; printf &quot;%s\t%s\t%s\t%.4f\n&quot;,$1,$2,$3,density}&#x27;</span> \
+    gene_density_novel_raw.txt &gt; gene_density_novel.txt
+</code></pre>
+<p class="has-line-data" data-line-start="1709" data-line-end="1710"><strong><code>05_te_density.sh</code></strong> — Computes TE density (fraction 0–1) per 5 Mb window from RepeatMasker output:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1712" data-line-end="1732"><span class="hljs-meta">#!/bin/bash</span>
+RM_OUT=/project/&lt;account&gt;/WGS_Data/new_data/sample/07-repeatmasker/ragtag.scaffold.fasta.out
+
+awk <span class="hljs-string">&#x27;NR&gt;3 &amp;&amp; NF&gt;=9 {
+    chrom=$5
+    if (chrom ~ /^chr[1-7][ABD]_RagTag$/) {
+        sub(/_RagTag$/,&quot;&quot;,chrom); sub(/^chr/,&quot;Chr&quot;,chrom)
+        start=$6; end=$7
+        if (start &gt; end) { tmp=start; start=end; end=tmp }
+        print chrom&quot;\t&quot;start&quot;\t&quot;end
+    }
+}&#x27;</span> <span class="hljs-variable">$RM_OUT</span> | <span class="hljs-built_in">sort</span> -k1,1 -k2,2n &gt; repeats.bed
+
+bedtools intersect -a windows_5mb.bed -b repeats.bed -wao \
+    | awk <span class="hljs-string">&#x27;{print $1&quot;\t&quot;$2&quot;\t&quot;$3&quot;\t&quot;$7}&#x27;</span> \
+    | bedtools groupby -i - -g 1,2,3 -c 4 -o <span class="hljs-built_in">sum</span> &gt; te_density_raw.txt
+
+awk <span class="hljs-string">&#x27;{window_size=$3-$2; fraction=$4/window_size; if(fraction&gt;1) fraction=1; printf &quot;%s\t%s\t%s\t%.4f\n&quot;,$1,$2,$3,fraction}&#x27;</span> \
+    te_density_raw.txt &gt; te_density.txt
+</code></pre>
+<p class="has-line-data" data-line-start="1733" data-line-end="1734"><strong><code>06_gc_content.sh</code></strong> — Computes GC content per 5 Mb window using bedtools nuc:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1736" data-line-end="1742"><span class="hljs-meta">#!/bin/bash</span>
+FA=/project/&lt;account&gt;/WGS_Data/new_data/sample/05-scaffolding/sam.21chr.fa
+
+bedtools nuc -<span class="hljs-keyword">fi</span> <span class="hljs-variable">$FA</span> -bed windows_5mb.bed \
+    | awk <span class="hljs-string">&#x27;NR&gt;1 { printf &quot;%s\t%s\t%s\t%.4f\n&quot;, $1, $2, $3, $5 }&#x27;</span> &gt; gc_content.txt
+</code></pre>
+<p class="has-line-data" data-line-start="1743" data-line-end="1744"><strong><code>rename_chrom.sh</code></strong> — Reusable helper to convert <code>chr1A_RagTag</code> → <code>Chr1A</code> in any file via stdin:</p>
+<pre><code class="has-line-data language-bash" data-line-start="1746" data-line-end="1750"><span class="hljs-meta">#!/bin/bash</span>
+grep -P <span class="hljs-string">&quot;^chr[1-7][ABD]_RagTag\b&quot;</span> \
+    | sed <span class="hljs-string">&#x27;s/chr\([1-7][ABD]\)_RagTag/Chr\1/g&#x27;</span>
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="1751" data-line-end="1752"><a id="27c_Run_Circos_run_circosslurm_1751"></a>27c — Run Circos (<code>run_circos.slurm</code>)</h3>
+<p class="has-line-data" data-line-start="1753" data-line-end="1754">Executes Circos with the assembled configuration.</p>
+<pre><code class="has-line-data language-bash" data-line-start="1756" data-line-end="1778"><span class="hljs-meta">#!/bin/bash</span>
+<span class="hljs-comment">#SBATCH --job-name=circos_run</span>
+<span class="hljs-comment">#SBATCH --output=logs/circos_%j.out</span>
+<span class="hljs-comment">#SBATCH --error=logs/circos_%j.err</span>
+<span class="hljs-comment">#SBATCH --time=01:00:00</span>
+<span class="hljs-comment">#SBATCH --mem=16G</span>
+<span class="hljs-comment">#SBATCH --cpus-per-task=2</span>
+<span class="hljs-comment">#SBATCH --partition=&lt;general&gt;</span>
+<span class="hljs-comment">#SBATCH --account=&lt;general_user&gt;</span>
+<span class="hljs-comment">#SBATCH --mail-user=your_email@example.com</span>
+<span class="hljs-comment">#SBATCH --mail-type=BEGIN,END,FAIL</span>
+
+module purge
+<span class="hljs-built_in">source</span> /home/&lt;username&gt;/WGS_Data/etc/profile.d/conda.sh
+conda activate &lt;env_name&gt;
+
+<span class="hljs-built_in">cd</span> /project/&lt;account&gt;/WGS_Data/new_data/sample/15-circos
+
+circos -conf circos.conf \
+    &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;Success: result/sample_circos.png&quot;</span> \
+    || <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;FAILED - check logs&quot;</span>
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="1779" data-line-end="1780"><a id="27d_Circos_Configuration_Files_1779"></a>27d — Circos Configuration Files</h3>
+<p class="has-line-data" data-line-start="1781" data-line-end="1782"><strong><code>colors.conf</code></strong></p>
+<pre><code class="has-line-data" data-line-start="1784" data-line-end="1788">subA = 68,114,196
+subB = 112,173,71
+subD = 237,125,49
+</code></pre>
+<p class="has-line-data" data-line-start="1789" data-line-end="1790"><strong><code>ideogram.conf</code></strong></p>
+<pre><code class="has-line-data" data-line-start="1792" data-line-end="1809">&lt;ideogram&gt;
+  &lt;spacing&gt;
+    default = 0.004r
+    break   = 0.5r
+  &lt;/spacing&gt;
+  radius           = 0.85r
+  thickness        = 35p
+  fill             = yes
+  stroke_color     = dgrey
+  stroke_thickness = 2p
+  show_label       = yes
+  label_font       = bold
+  label_radius     = dims(ideogram,radius) + 0.12r
+  label_size       = 48
+  label_parallel   = yes
+&lt;/ideogram&gt;
+</code></pre>
+<p class="has-line-data" data-line-start="1810" data-line-end="1811"><strong><code>ticks.conf</code></strong></p>
+<pre><code class="has-line-data" data-line-start="1813" data-line-end="1838">show_ticks       = yes
+show_tick_labels = yes
+
+&lt;ticks&gt;
+  radius      = 1r
+  color       = black
+  thickness   = 2p
+  multiplier  = 1e-6
+  format      = %d
+
+  &lt;tick&gt;
+    spacing    = 100000000
+    size       = 15p
+    show_label = yes
+    label_size = 18p
+    format     = %d Mb
+  &lt;/tick&gt;
+
+  &lt;tick&gt;
+    spacing    = 50000000
+    size       = 8p
+    show_label = no
+  &lt;/tick&gt;
+&lt;/ticks&gt;
+</code></pre>
+<p class="has-line-data" data-line-start="1839" data-line-end="1840"><strong><code>circos.conf</code></strong> (main configuration):</p>
+<pre><code class="has-line-data" data-line-start="1842" data-line-end="2040">karyotype = karyotype.txt
+
+&lt;colors&gt;
+  &lt;&lt;include &lt;circos_env_path&gt;/etc/colors.conf&gt;&gt;
+  subA = 68,114,196
+  subB = 112,173,71
+  subD = 237,125,49
+&lt;/colors&gt;
+
+&lt;fonts&gt;
+serif = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunrm.otf
+serif_roman = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunrm.otf
+serif_default = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunrm.otf
+serif_normal = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunrm.otf
+serif_light = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunrm.otf
+serif_bold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbx.otf
+serif_italic = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunui.otf
+serif_bolditalic = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbi.otf
+serif_italicbold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbi.otf
+serif_condensed = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunssdc.otf
+serif_condensedbold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunssdc.otf
+serif_boldcondensed = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunssdc.otf
+sans_serif = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmr.ttf
+sans = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmr.ttf
+sansserif = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmr.ttf
+light = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmr.ttf
+normal = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmr.ttf
+default = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmr.ttf
+semibold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbsr.otf
+bold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbbx.otf
+italic = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbmo.otf
+bolditalic = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbxo.otf
+italicbold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbxo.otf
+condensed = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunssdc.otf
+condensedbold = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunssdc.otf
+boldcondensed = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunssdc.otf
+mono = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmuntt.ttf
+fixed = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmuntt.ttf
+mono_light = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbtl.otf
+fixed_light = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/modern/cmunbtl.otf
+symbols = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+symbol = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+glyph = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+wingding = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+wingding1 = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+wingding2 = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+wingding3 = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+glyphweb = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+webding = /home/&lt;user&gt;/.conda/envs/circos_env/fonts/symbols/circossymbols.otf
+&lt;/fonts&gt;
+
+&lt;&lt;include ideogram.conf&gt;&gt;
+&lt;&lt;include ticks.conf&gt;&gt;
+
+&lt;image&gt;
+  dir    = results
+  file   = sample_circos.png
+  png    = yes
+  svg    = yes
+  radius = 1800p
+  angle_offset      = -90
+  auto_alpha_colors = yes
+  background        = white
+&lt;/image&gt;
+
+chromosomes_units           = 1000000
+chromosomes_display_default = yes
+
+# Group by subgenome A → B → D
+chromosomes_order = Chr1A,Chr2A,Chr3A,Chr4A,Chr5A,Chr6A,Chr7A,\
+                    Chr1B,Chr2B,Chr3B,Chr4B,Chr5B,Chr6B,Chr7B,\
+                    Chr1D,Chr2D,Chr3D,Chr4D,Chr5D,Chr6D,Chr7D
+
+&lt;plots&gt;
+  # Chromosome size labels
+  &lt;plot&gt;
+    type         = text
+    file         = chrom_size_label.txt
+    r0           = 0.90r
+    r1           = 0.98r
+    label_radius = 0.945r
+    label_size   = 28p
+    label_font   = bold
+    label_color  = black
+    label_snuggle    = no
+    label_rotate     = no
+    label_parallel   = yes
+    &lt;backgrounds&gt;
+      &lt;background&gt;
+        color = vlgrey
+      &lt;/background&gt;
+    &lt;/backgrounds&gt;
+  &lt;/plot&gt;
+
+  # Track 1: GC Content
+  &lt;plot&gt;
+    type  = line
+    file  = gc_content.txt
+    r0    = 0.83r
+    r1    = 0.89r
+    min   = 0.40   # update after checking your range
+    max   = 0.52   # update after checking your range
+    color = vdblue
+    thickness = 2
+    &lt;axes&gt;
+      &lt;axis&gt;
+        spacing   = 0.25r
+        color     = dgrey
+        thickness = 1
+      &lt;/axis&gt;
+    &lt;/axes&gt;
+    &lt;backgrounds&gt;
+      &lt;background&gt;
+        color = vlgrey
+      &lt;/background&gt;
+    &lt;/backgrounds&gt;
+  &lt;/plot&gt;
+
+  # Track 2: Main Gene Density
+  &lt;plot&gt;
+    type       = histogram
+    file       = gene_density_main.txt
+    r0         = 0.74r
+    r1         = 0.82r
+    min        = 0
+    max        = 31   # update after checking your max
+    fill_color = dgreen
+    color      = dgreen
+    thickness  = 1
+    &lt;axes&gt;
+      &lt;axis&gt;
+        spacing   = 0.5r
+        color     = lgrey
+        thickness = 1
+      &lt;/axis&gt;
+    &lt;/axes&gt;
+    &lt;backgrounds&gt;
+      &lt;background&gt;
+        color = vlgrey
+      &lt;/background&gt;
+    &lt;/backgrounds&gt;
+  &lt;/plot&gt;
+
+  # Track 3: Novel Gene Density
+  &lt;plot&gt;
+    type       = histogram
+    file       = gene_density_novel.txt
+    r0         = 0.63r
+    r1         = 0.72r
+    min        = 0
+    max        = 3    # update after checking your max
+    fill_color = vdblue
+    color      = vdblue
+    thickness  = 1
+    extend_bin = no
+    &lt;axes&gt;
+      &lt;axis&gt;
+        spacing   = 0.5r
+        color     = lgrey
+        thickness = 1
+      &lt;/axis&gt;
+    &lt;/axes&gt;
+    &lt;backgrounds&gt;
+      &lt;background&gt;
+        color = vlgrey
+      &lt;/background&gt;
+    &lt;/backgrounds&gt;
+  &lt;/plot&gt;
+
+  # Track 4: TE Density (innermost)
+  &lt;plot&gt;
+    type       = histogram
+    file       = te_density.txt
+    r0         = 0.52r
+    r1         = 0.62r
+    min        = 0
+    max        = 1
+    fill_color = dorange
+    color      = dorange
+    thickness  = 1
+    &lt;axes&gt;
+      &lt;axis&gt;
+        spacing   = 0.5r
+        color     = lgrey
+        thickness = 1
+      &lt;/axis&gt;
+    &lt;/axes&gt;
+    &lt;backgrounds&gt;
+      &lt;background&gt;
+        color = vlgrey
+      &lt;/background&gt;
+    &lt;/backgrounds&gt;
+  &lt;/plot&gt;
+
+&lt;/plots&gt;
+
+&lt;&lt;include &lt;circos_env_path&gt;/etc/housekeeping.conf&gt;&gt;
+</code></pre>
+<hr>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="2044" data-line-end="2045"><a id="Step_28_Data_Submission_to_the_European_Nucleotide_Archive_ENA_2044"></a>Step 28:  Data Submission to the European Nucleotide Archive (ENA)</h2>
+<p class="has-line-data" data-line-start="2045" data-line-end="2046">The raw PacBio HiFi sequencing reads and final genome assembly were submitted to the European Nucleotide Archive (ENA) using Webin-CLI. The submission workflow involved preparing metadata manifests, validating the input files, and submitting the sequencing reads and genome assembly. Study and sample records must be registered with ENA before submission.</p>
+<h3 class="code-line has-line-data" data-line-start="2047" data-line-end="2048"><a id="28a_Standardize_Genome_and_Annotation_Sequence_Identifiers_2047"></a>28a — Standardize Genome and Annotation Sequence Identifiers</h3>
+<p class="has-line-data" data-line-start="2048" data-line-end="2049">Before data deposition, sequence identifiers were standardized across the assembled genome FASTA, structural gene annotation GFF3, and repeat annotation GFF files. Chromosome sequences and unplaced scaffolds were assigned consistent prefixes while retaining their original chromosome or contig identifiers. The following generalized script performs these renaming operations using a configurable assembly prefix.</p>
+<p class="has-line-data" data-line-start="2050" data-line-end="2051"><strong><code>rename_assembly_identifiers.py</code></strong></p>
+<pre><code class="has-line-data language-python" data-line-start="2052" data-line-end="2177"><span class="hljs-comment">#!/usr/bin/env python3</span>
+
+<span class="hljs-keyword">import</span> re
+<span class="hljs-keyword">from</span> pathlib <span class="hljs-keyword">import</span> Path
+
+<span class="hljs-comment"># Generic assembly identifier</span>
+PREFIX = <span class="hljs-string">&quot;sample_v1&quot;</span>
+
+<span class="hljs-comment"># Input and output files</span>
+GENOME_IN = <span class="hljs-string">&quot;ragtag.scaffold.fasta&quot;</span>
+GENOME_OUT = <span class="hljs-string">&quot;sample_genome.fasta&quot;</span>
+
+GFF_IN = <span class="hljs-string">&quot;sample_final_merged.gff3&quot;</span>
+GFF_OUT = <span class="hljs-string">&quot;sample_annotation.gff3&quot;</span>
+
+REPEAT_IN = <span class="hljs-string">&quot;sample_repeats.gff&quot;</span>
+REPEAT_OUT = <span class="hljs-string">&quot;sample_repeats_renamed.gff&quot;</span>
+
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">rename_seqid</span>(<span class="hljs-params">seqid</span>):
+    <span class="hljs-comment"># Chromosome: chr1A_RagTag -&gt; sample_v1_chr1A</span>
+    chromosome = re.fullmatch(
+        <span class="hljs-string">r&quot;chr([1-7][ABD])_RagTag&quot;</span>, seqid
+    )
+
+    <span class="hljs-keyword">if</span> chromosome:
+        <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;<span class="hljs-subst">{PREFIX}</span>_chr<span class="hljs-subst">{chromosome.group(<span class="hljs-number">1</span>)}</span>&quot;</span>
+
+    <span class="hljs-comment"># Unplaced scaffold</span>
+    contig = re.fullmatch(
+        <span class="hljs-string">r&quot;(ptg[0-9]+[a-z])_RagTag&quot;</span>, seqid
+    )
+
+    <span class="hljs-keyword">if</span> contig:
+        <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;<span class="hljs-subst">{PREFIX}</span>_chrUn_<span class="hljs-subst">{contig.group(<span class="hljs-number">1</span>)}</span>&quot;</span>
+
+    <span class="hljs-keyword">raise</span> ValueError(
+        <span class="hljs-string">f&quot;Unrecognized sequence identifier: <span class="hljs-subst">{seqid}</span>&quot;</span>
+    )
+
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">rename_fasta</span>(<span class="hljs-params">input_file, output_file</span>):
+    count = <span class="hljs-number">0</span>
+
+    <span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(input_file) <span class="hljs-keyword">as</span> fin, <span class="hljs-built_in">open</span>(output_file, <span class="hljs-string">&quot;w&quot;</span>) <span class="hljs-keyword">as</span> fout:
+        <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> fin:
+            <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;&gt;&quot;</span>):
+                original = line[<span class="hljs-number">1</span>:].strip().split()[<span class="hljs-number">0</span>]
+                renamed = rename_seqid(original)
+
+                fout.write(<span class="hljs-string">f&quot;&gt;<span class="hljs-subst">{renamed}</span>\n&quot;</span>)
+                count += <span class="hljs-number">1</span>
+            <span class="hljs-keyword">else</span>:
+                fout.write(line)
+
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;FASTA sequences renamed: <span class="hljs-subst">{count}</span>&quot;</span>)
+
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">rename_gff</span>(<span class="hljs-params">input_file, output_file</span>):
+    count = <span class="hljs-number">0</span>
+
+    <span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(input_file) <span class="hljs-keyword">as</span> fin, <span class="hljs-built_in">open</span>(output_file, <span class="hljs-string">&quot;w&quot;</span>) <span class="hljs-keyword">as</span> fout:
+        <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> fin:
+            <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;##sequence-region&quot;</span>):
+                parts = line.rstrip(<span class="hljs-string">&quot;\n&quot;</span>).split()
+                parts[<span class="hljs-number">1</span>] = rename_seqid(parts[<span class="hljs-number">1</span>])
+                fout.write(<span class="hljs-string">&quot; &quot;</span>.join(parts) + <span class="hljs-string">&quot;\n&quot;</span>)
+                <span class="hljs-keyword">continue</span>
+
+            <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;#&quot;</span>) <span class="hljs-keyword">or</span> <span class="hljs-keyword">not</span> line.strip():
+                fout.write(line)
+                <span class="hljs-keyword">continue</span>
+
+            parts = line.rstrip(<span class="hljs-string">&quot;\n&quot;</span>).split(<span class="hljs-string">&quot;\t&quot;</span>)
+
+            <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(parts) &gt;= <span class="hljs-number">9</span>:
+                parts[<span class="hljs-number">0</span>] = rename_seqid(parts[<span class="hljs-number">0</span>])
+                fout.write(<span class="hljs-string">&quot;\t&quot;</span>.join(parts) + <span class="hljs-string">&quot;\n&quot;</span>)
+                count += <span class="hljs-number">1</span>
+            <span class="hljs-keyword">else</span>:
+                fout.write(line)
+
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;GFF features renamed: <span class="hljs-subst">{count}</span>&quot;</span>)
+
+
+<span class="hljs-comment"># Rename all sequence identifiers</span>
+rename_fasta(GENOME_IN, GENOME_OUT)
+rename_gff(GFF_IN, GFF_OUT)
+rename_gff(REPEAT_IN, REPEAT_OUT)
+
+<span class="hljs-comment"># Verify that GFF identifiers match the genome FASTA</span>
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">fasta_ids</span>(<span class="hljs-params">path</span>):
+    <span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(path) <span class="hljs-keyword">as</span> f:
+        <span class="hljs-keyword">return</span> {
+            line[<span class="hljs-number">1</span>:].strip().split()[<span class="hljs-number">0</span>]
+            <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> f
+            <span class="hljs-keyword">if</span> line.startswith(<span class="hljs-string">&quot;&gt;&quot;</span>)
+        }
+
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">gff_ids</span>(<span class="hljs-params">path</span>):
+    <span class="hljs-keyword">with</span> <span class="hljs-built_in">open</span>(path) <span class="hljs-keyword">as</span> f:
+        <span class="hljs-keyword">return</span> {
+            line.split(<span class="hljs-string">&quot;\t&quot;</span>)[<span class="hljs-number">0</span>]
+            <span class="hljs-keyword">for</span> line <span class="hljs-keyword">in</span> f
+            <span class="hljs-keyword">if</span> line.strip() <span class="hljs-keyword">and</span> <span class="hljs-keyword">not</span> line.startswith(<span class="hljs-string">&quot;#&quot;</span>)
+            <span class="hljs-keyword">and</span> <span class="hljs-built_in">len</span>(line.split(<span class="hljs-string">&quot;\t&quot;</span>)) &gt;= <span class="hljs-number">9</span>
+        }
+
+
+genome_ids = fasta_ids(GENOME_OUT)
+
+<span class="hljs-keyword">for</span> annotation_file <span class="hljs-keyword">in</span> [GFF_OUT, REPEAT_OUT]:
+    missing = gff_ids(annotation_file) - genome_ids
+
+    <span class="hljs-keyword">if</span> missing:
+        <span class="hljs-keyword">raise</span> ValueError(
+            <span class="hljs-string">f&quot;<span class="hljs-subst">{annotation_file}</span>: <span class="hljs-subst">{<span class="hljs-built_in">len</span>(missing)}</span> &quot;</span>
+            <span class="hljs-string">&quot;sequence identifiers missing from FASTA&quot;</span>
+        )
+
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">f&quot;Verified: <span class="hljs-subst">{annotation_file}</span>&quot;</span>)
+
+<span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;Sequence identifier standardization complete.&quot;</span>)
+</code></pre>
+<p class="has-line-data" data-line-start="2178" data-line-end="2179"><strong>Expected output files:</strong></p>
+<ul>
+<li class="has-line-data" data-line-start="2179" data-line-end="2180"><code>sample_genome.fasta</code> — assembled genome with standardized chromosome and scaffold identifiers.</li>
+<li class="has-line-data" data-line-start="2180" data-line-end="2181"><code>sample_annotation.gff3</code> — structural annotation with matching sequence identifiers.</li>
+<li class="has-line-data" data-line-start="2181" data-line-end="2183"><code>sample_repeats_renamed.gff</code> — repeat annotation with matching sequence identifiers.</li>
+</ul>
+<h3 class="code-line has-line-data" data-line-start="2183" data-line-end="2184"><a id="28b_Prepare_Working_Directory_2183"></a>28b — Prepare Working Directory</h3>
+<p class="has-line-data" data-line-start="2184" data-line-end="2185">Create a directory for ENA submission and activate the required environment.</p>
+<pre><code class="has-line-data language-bash" data-line-start="2187" data-line-end="2194">conda activate &lt;env_name&gt;
+
+<span class="hljs-built_in">mkdir</span> -p /path/to/ena_submission/reads_out
+<span class="hljs-built_in">mkdir</span> -p /path/to/ena_submission/assembly_out
+
+<span class="hljs-built_in">cd</span> /path/to/ena_submission
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="2194" data-line-end="2195"><a id="28c_Prepare_Raw_Read_Submission_Manifest_2194"></a>28c — Prepare Raw Read Submission Manifest</h3>
+<p class="has-line-data" data-line-start="2195" data-line-end="2196">Create a tab-delimited manifest containing the sequencing metadata and FASTQ filename.</p>
+<p class="has-line-data" data-line-start="2197" data-line-end="2198"><strong><code>reads_manifest.txt</code></strong></p>
+<pre><code class="has-line-data language-text" data-line-start="2199" data-line-end="2208">STUDY	&lt;study_accession&gt;
+SAMPLE	&lt;sample_accession&gt;
+NAME	&lt;run_alias&gt;
+INSTRUMENT	Revio
+LIBRARY_SOURCE	GENOMIC
+LIBRARY_SELECTION	RANDOM
+LIBRARY_STRATEGY	WGS
+FASTQ	sample_hifi_reads.fastq.gz
+</code></pre>
+<p class="has-line-data" data-line-start="2208" data-line-end="2209">The FASTQ filename must correspond to the sequencing file being submitted. The study and sample accessions must match the previously registered ENA records.</p>
+<h3 class="code-line has-line-data" data-line-start="2210" data-line-end="2211"><a id="28d_Validate_and_Submit_Raw_Reads_2210"></a>28d — Validate and Submit Raw Reads</h3>
+<p class="has-line-data" data-line-start="2211" data-line-end="2212">Webin-CLI was used to validate the sequencing data before submission.</p>
+<pre><code class="has-line-data language-bash" data-line-start="2214" data-line-end="2223">java -jar webin-cli-&lt;version&gt;.jar \
+  -context reads \
+  -userName &lt;webin_username&gt; \
+  -password &lt;webin_password&gt; \
+  -manifest reads_manifest.txt \
+  -inputDir /path/to/fastq_files \
+  -outputDir ./reads_out \
+  -validate
+</code></pre>
+<p class="has-line-data" data-line-start="2223" data-line-end="2224">After successful validation, the reads were submitted using:</p>
+<pre><code class="has-line-data language-bash" data-line-start="2226" data-line-end="2235">java -jar webin-cli-&lt;version&gt;.jar \
+  -context reads \
+  -userName &lt;webin_username&gt; \
+  -password &lt;webin_password&gt; \
+  -manifest reads_manifest.txt \
+  -inputDir /path/to/fastq_files \
+  -outputDir ./reads_out \
+  -submit
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="2236" data-line-end="2237"><a id="28e_Prepare_Genome_Assembly_Submission_Manifest_2236"></a>28e — Prepare Genome Assembly Submission Manifest</h3>
+<p class="has-line-data" data-line-start="2237" data-line-end="2238">The pseudomolecule-scale assembly was submitted using a genome assembly manifest containing the assembly metadata, FASTA file, and chromosome list.</p>
+<p class="has-line-data" data-line-start="2239" data-line-end="2240"><strong><code>assembly_manifest.txt</code></strong></p>
+<pre><code class="has-line-data language-text" data-line-start="2241" data-line-end="2253">STUDY	&lt;study_accession&gt;
+SAMPLE	&lt;sample_accession&gt;
+ASSEMBLYNAME	&lt;assembly_alias&gt;
+ASSEMBLY_TYPE	isolate
+COVERAGE	&lt;sequencing_coverage&gt;
+PROGRAM	hifiasm 0.25.0
+PLATFORM	PACBIO_SMRT
+MINGAPLENGTH	&lt;minimum_gap_length&gt;
+MOLECULETYPE	genomic DNA
+FASTA	sample_genome.fasta.gz
+CHROMOSOME_LIST	sample_chromosome_list.txt.gz
+</code></pre>
+<p class="has-line-data" data-line-start="2254" data-line-end="2255">The chromosome list identifies the sequences corresponding to assembled chromosomes. Chromosome identifiers must be consistent between the FASTA file and chromosome list. Unplaced sequences can be included in the assembly FASTA.</p>
+<h3 class="code-line has-line-data" data-line-start="2256" data-line-end="2257"><a id="28f_Validate_and_Submit_Genome_Assembly_2256"></a>28f — Validate and Submit Genome Assembly</h3>
+<p class="has-line-data" data-line-start="2257" data-line-end="2258">The assembly FASTA and associated metadata were validated using Webin-CLI with the genome submission context.</p>
+<pre><code class="has-line-data language-bash" data-line-start="2260" data-line-end="2269">java -jar webin-cli-&lt;version&gt;.jar \
+  -context genome \
+  -userName &lt;webin_username&gt; \
+  -password &lt;webin_password&gt; \
+  -manifest assembly_manifest.txt \
+  -inputDir /path/to/assembly_files \
+  -outputDir ./assembly_out \
+  -validate
+</code></pre>
+<p class="has-line-data" data-line-start="2270" data-line-end="2271">After successful validation, the genome assembly was submitted using:</p>
+<pre><code class="has-line-data language-bash" data-line-start="2273" data-line-end="2282">java -jar webin-cli-&lt;version&gt;.jar \
+  -context genome \
+  -userName &lt;webin_username&gt; \
+  -password &lt;webin_password&gt; \
+  -manifest assembly_manifest.txt \
+  -inputDir /path/to/assembly_files \
+  -outputDir ./assembly_out \
+  -submit
+</code></pre>
+<hr>
+<hr>
+
+</body>
+</html>

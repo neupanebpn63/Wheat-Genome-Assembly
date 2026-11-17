@@ -85,9 +85,9 @@ The GitHub repository may receive future updates, while the archived Zenodo rele
 ## Contact
 
 **Bipin Neupane**  
-Department of Plant Pathology  
 Washington State University, Pullman, WA, USA
 
 GitHub: [@neupanebpn63](https://github.com/neupanebpn63)
+Website: [@neupanebpn](https://neupanebpn63.wixsite.com/bpn1)
 
 Questions, suggestions, and feedback related to the pipeline are welcome through the repository's GitHub Issues.

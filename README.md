@@ -27,8 +27,8 @@ The documentation includes SLURM job scripts, command-line workflows, custom Pyt
 
 The complete workflow is available in two formats:
 
-- **[WGS_Assembly_Pipeline.md](WGS_Assembly_Pipeline.md)** — Markdown documentation containing the computational workflow, commands, and scripts.
-- **[WGS_Assembly_Pipeline.html](WGS_Assembly_Pipeline.html)** — HTML version for convenient viewing.
+- **[WGS_Assembly_Pipeline_Madsen_Pritchett.md](WGS_Assembly_Pipeline_Madsen_Pritchett.md)** — Markdown documentation containing the computational workflow, commands, and scripts.
+- **[WGS_Assembly_Pipeline_Madsen_Pritchett.html](WGS_Assembly_Pipeline_Madsen_Pritchett.html)** — HTML version for convenient viewing.
 
 ## Associated Genome Projects
 
